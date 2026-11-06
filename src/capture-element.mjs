@@ -166,8 +166,8 @@ export function captureElement(root, options = {}) {
       .filter((attribute) => CAPTURED_ATTRIBUTES.has(attribute.name))
       .map((attribute) => [attribute.name, attribute.value]));
     if (["INPUT", "TEXTAREA", "SELECT"].includes(node.tagName)) {
-      // A capture may end up in a shared design file, so it holds only what the page shows:
-      // bullets for a masked value, and nothing for a control that is not rendered.
+      // A capture may end up in a shared design file: a masked value stays bullets, and a control
+      // with no box or hidden by `visibility` keeps its value out.
       const rendered = node.getClientRects().length > 0 && computed.visibility !== "hidden";
       if (rendered && (node.type === "password" || masked)) attributes.maskedValue = "•".repeat(node.value.length);
       else if (rendered && node.type !== "hidden") attributes.value = node.value;

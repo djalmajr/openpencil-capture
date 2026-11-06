@@ -1,8 +1,6 @@
 import { encodeBase64 } from "./base64.mjs";
 
-const ASSET_REQUEST_EVENT = "openpencil-capture:asset-request";
-const ASSET_RESPONSE_EVENT = "openpencil-capture:asset-response";
-const ASSET_TIMEOUT_MS = 30_000;
+const FETCH_TIMEOUT_MS = 15_000;
 
 export function decodeDataUrl(url) {
   const comma = url.indexOf(",");
@@ -27,42 +25,22 @@ export function isEditorDecodableImage(bytes) {
   return startsWith(0x52, 0x49, 0x46, 0x46) && bytes[8] === 0x57 && bytes[9] === 0x45 && bytes[10] === 0x42 && bytes[11] === 0x50;
 }
 
-function requestExtensionAsset(detail) {
-  if (!globalThis.document?.documentElement.hasAttribute("data-openpencil-capture-extension")) return Promise.resolve(null);
-  const id = crypto.randomUUID();
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => finish(null), ASSET_TIMEOUT_MS);
-    const onResponse = (event) => {
-      let response;
-      try { response = JSON.parse(event.detail); } catch { return; }
-      if (response?.id === id) finish(response.dataUrl || null);
-    };
-    const finish = (value) => {
-      clearTimeout(timeout);
-      globalThis.removeEventListener(ASSET_RESPONSE_EVENT, onResponse);
-      resolve(value);
-    };
-    globalThis.addEventListener(ASSET_RESPONSE_EVENT, onResponse);
-    globalThis.dispatchEvent(new CustomEvent(ASSET_REQUEST_EVENT, {detail:JSON.stringify({id, ...detail})}));
-  });
-}
-
-async function fetchBytes(url, fetchImpl) {
+async function fetchBytes(url, {fetchImpl = globalThis.fetch, requestAsset}) {
   if (url.startsWith("data:")) return decodeDataUrl(url);
   try {
-    const response = await fetchImpl(url);
+    const response = await fetchImpl(url, {signal:AbortSignal.timeout(FETCH_TIMEOUT_MS)});
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return new Uint8Array(await response.arrayBuffer());
   } catch {
     // The page is bound by CORS; the extension's own fetch is not.
-    const dataUrl = await requestExtensionAsset({url});
+    const dataUrl = await requestAsset?.({url});
     return dataUrl ? decodeDataUrl(dataUrl) : null;
   }
 }
 
 export async function loadImageBytes(url, size, options = {}) {
-  const bytes = await fetchBytes(url, options.fetchImpl || globalThis.fetch);
+  const bytes = await fetchBytes(url, options);
   if (!bytes || isEditorDecodableImage(bytes)) return bytes;
-  const rasterized = await requestExtensionAsset({url:encodeDataUrl(bytes), rasterize:size});
+  const rasterized = await options.requestAsset?.({url:encodeDataUrl(bytes), rasterize:size});
   return rasterized ? decodeDataUrl(rasterized) : null;
 }

@@ -328,6 +328,14 @@ describe("convertCaptureToTree", () => {
     expect(root.children[1]).toMatchObject({type:"frame",fill:"#F0B100",width:8,height:8});
   });
 
+  // Regression: a hidden root crashed with "Cannot set properties of null".
+  test("explains that a hidden selection cannot be captured", () => {
+    const capture = {format:"openpencil-capture-ir",version:1,rootPath:"0",label:"Hidden",source:{},nodes:[
+      {path:"0",parentPath:null,tag:"div",name:"root",text:null,rect:{x:0,y:0,width:0,height:0},attributes:{},styles:rootStyles},
+    ]};
+    expect(() => convertCaptureToTree(capture)).toThrow("The selected element is not visible");
+  });
+
   // Regression: a pattern matching any trailing ", 0)" read opaque rgb(0, 0, 0) as transparent.
   test("keeps opaque black gradient stops and recognizes transparent ones", () => {
     const fill = cssBackgroundToFill({rect:{width:10,height:10},attributes:{},styles:{backgroundImage:"linear-gradient(90deg, rgb(0, 0, 0), rgba(0, 0, 0, 0))"}});

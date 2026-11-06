@@ -29,7 +29,6 @@ try {
   await context.grantPermissions(["clipboard-read", "clipboard-write"], {origin:childOrigin});
   const page = await context.newPage();
   await page.goto(topOrigin, {waitUntil:"networkidle", timeout:30_000});
-  await page.addScriptTag({path:new URL("dist/extension/bridge.js", root).pathname});
   await page.evaluate(() => {
     Object.defineProperty(globalThis, "chrome", {
       configurable:true,
@@ -45,7 +44,6 @@ try {
 
   const target = frame.locator("#payout");
   await target.waitFor({state:"visible"});
-  await frame.addScriptTag({path:new URL("dist/extension/bridge.js", root).pathname});
   await frame.evaluate(() => {
     Object.defineProperty(globalThis, "chrome", {
       configurable:true,

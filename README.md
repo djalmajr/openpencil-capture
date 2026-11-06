@@ -26,7 +26,7 @@ Click the extension icon to enter capture mode. The page gets a floating toolbar
 
 Once the toolbar confirms the copy, switch to OpenPencil and paste. With nothing selected, the capture lands selected at the top-left of the current page.
 
-The toolbar fades while the pointer is over it so content underneath remains selectable. No page data is transmitted: images are fetched by the page or the extension and travel inside the clipboard.
+The toolbar fades while the pointer is over it so content underneath remains selectable. No page data is transmitted: captures stay in the clipboard. To embed images, the page fetches them first; if that fails, the extension fetches them from their own server without cookies.
 
 The picker follows live DOM updates between hover and click, and recovers a selected element after a framework rerender. Capture mode is installed in every accessible frame: entering an iframe activates its local picker and hides the parent's, so selection and capture operate on the iframe's own DOM without stacked toolbars.
 
@@ -64,9 +64,16 @@ Limits of the capture model:
 - Filters other than `grayscale()` and `brightness()` are dropped. So are link targets; the underline stays.
 - A diagonal SVG `<line>` is always drawn from top-left to bottom-right.
 - Text uses the first family in `font-family`, even if the browser fell back to a later one, so its metrics can differ.
+- Open shadow roots, SVG `<use>` sprites and iframe content in a whole-page capture come out empty.
+- Radial and conic gradients are dropped, and `to <side>` linear gradients render top to bottom. In a layered background, only the first image or gradient survives.
+- A percentage `border-radius` is read as pixels, and `overflow:auto` or `scroll` containers do not clip.
+- Colors outside `rgb`, `oklch`, `oklab` and `lab` are dropped, and transparent text becomes black.
+- `background-repeat`, `background-size` lengths, dashed strokes and `<pre>` whitespace are not preserved.
 
-When a resource cannot be read or the clipboard is misused:
+When a resource cannot be read, or the clipboard is misused:
 
+- Password values paste as bullets, and hidden field values are never read.
+- An image behind a cross-origin login cannot be embedded, because the extension fetches without cookies.
 - A cross-origin canvas the browser refuses to read becomes a transparent `Canvas · Snapshot unavailable` frame.
 - An image neither the page nor the extension can fetch leaves a `· Image unavailable` layer.
 - **Pasting the clipboard into a text field inserts the Base64 envelope**, because the plain-text flavor has to carry it (see below).

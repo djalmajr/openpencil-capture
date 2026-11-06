@@ -17,6 +17,15 @@ const childServer = Bun.serve({
   },
 });
 const childOrigin = `http://127.0.0.1:${childServer.port}`;
+let secretReads = 0;
+const secretServer = Bun.serve({
+  port:0,
+  fetch() {
+    secretReads += 1;
+    return new Response("secret", {headers:{"content-type":"text/plain"}});
+  },
+});
+const secretUrl = `http://localhost:${secretServer.port}/secret`;
 const topServer = Bun.serve({
   port:0,
   fetch() {
@@ -44,9 +53,28 @@ try {
     const [tab] = await chrome.tabs.query({active:true, currentWindow:true});
     if (!tab?.id) throw new Error("Could not resolve the active test tab");
     const target = {tabId:tab.id, allFrames:true};
-    await chrome.scripting.executeScript({target, world:"MAIN", files:["bridge.js"]});
     await chrome.scripting.executeScript({target, files:["content.js"]});
   });
+
+  // A hostile page tries every channel an earlier design exposed to page scripts.
+  const pageChannels = await page.evaluate(async (url) => {
+    const replies = [];
+    const id = crypto.randomUUID();
+    for (const name of ["asset-response", "copy-response"]) {
+      addEventListener(`openpencil-capture:${name}`, (event) => replies.push(event.detail));
+    }
+    dispatchEvent(new CustomEvent("openpencil-capture:asset-request", {detail:JSON.stringify({id, url})}));
+    dispatchEvent(new CustomEvent("openpencil-capture:copy-request", {detail:JSON.stringify({id, selector:"body"})}));
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+    return {
+      replies,
+      marker:document.documentElement.hasAttribute("data-openpencil-capture-extension"),
+      runtime:typeof chrome !== "undefined" && Boolean(chrome.runtime?.sendMessage),
+    };
+  }, secretUrl);
+  if (secretReads !== 0 || pageChannels.replies.length > 0 || pageChannels.marker || pageChannels.runtime) {
+    throw new Error(`The page reached the extension: ${JSON.stringify({secretReads, pageChannels})}`);
+  }
 
   const target = frame.locator("#payout");
   await frame.locator("#__openpencil_capture_host__").waitFor({state:"attached"});
@@ -77,5 +105,6 @@ try {
   await context?.close();
   topServer.stop(true);
   childServer.stop(true);
+  secretServer.stop(true);
   await rm(userDataDir, {recursive:true, force:true});
 }

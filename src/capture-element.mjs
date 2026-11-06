@@ -148,7 +148,9 @@ export function captureElement(root, options = {}) {
       .filter((attribute) => CAPTURED_ATTRIBUTES.has(attribute.name))
       .map((attribute) => [attribute.name, attribute.value]));
     if (["INPUT", "TEXTAREA", "SELECT"].includes(node.tagName)) {
-      attributes.value = node.value;
+      // The page shows bullets for a password, and a capture may end up in a shared design file.
+      if (node.type === "password") attributes.maskedValue = "•".repeat(node.value.length);
+      else if (node.type !== "hidden") attributes.value = node.value;
       attributes.disabled = node.disabled;
       if ("checked" in node) attributes.checked = node.checked;
       if (node.tagName === "SELECT") attributes.selectedLabel = node.selectedOptions[0]?.textContent?.trim() || "";

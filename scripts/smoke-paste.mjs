@@ -124,7 +124,6 @@ try {
   await serviceWorker.evaluate(async () => {
     const [activeTab] = await chrome.tabs.query({active:true, currentWindow:true});
     const injection = {tabId:activeTab.id, allFrames:true};
-    await chrome.scripting.executeScript({target:injection, world:"MAIN", files:["bridge.js"]});
     await chrome.scripting.executeScript({target:injection, files:["content.js"]});
   });
   await tab.locator("#__openpencil_capture_host__").waitFor({state:"attached"});

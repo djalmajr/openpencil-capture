@@ -404,8 +404,9 @@ function makeTextUnderline(node, parent, name = `${semanticLayerName(node)} · U
 function controlText(node, parent) {
   if (!["input", "textarea", "select"].includes(node.tag) || !isVisible(node)) return null;
   if (["checkbox", "radio", "range", "file", "hidden"].includes(node.attributes.type)) return null;
-  const hasValue = Boolean(node.attributes.selectedLabel || node.attributes.value);
-  const content = node.attributes.selectedLabel || node.attributes.value || node.attributes.placeholder;
+  const value = node.attributes.selectedLabel || node.attributes.value || node.attributes.maskedValue;
+  const hasValue = Boolean(value);
+  const content = value || node.attributes.placeholder;
   if (!content) return null;
   const fontSize = px(node.styles.fontSize, 14);
   const horizontalPadding = px(node.styles.paddingLeft, Math.min(12, Math.max(6, node.rect.height / 3)));
@@ -668,6 +669,7 @@ export function convertCaptureToTree(capture) {
     return frame;
   };
   const root = convertNode(rootSource, { rect:{ x:0, y:0 } });
+  if (!root) throw new Error("The selected element is not visible");
   root.name = `Captured · ${inferTitle(capture, rootSource)}`;
   root.x = 0;
   root.y = 0;

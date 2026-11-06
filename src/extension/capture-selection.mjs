@@ -1,14 +1,13 @@
 import { captureElementForOpenPencil } from "../openpencil-clipboard.mjs";
 import { elementVisualSignature, waitForVisualStability } from "./visual-stability.mjs";
 
-export async function captureSelectionInMainWorld(targetSelector, sourceSelector = targetSelector) {
-  const target = document.querySelector(targetSelector);
-  if (!(target instanceof Element)) throw new Error("The selected element is no longer available");
+export async function captureSelection(target, sourceSelector, options = {}) {
   await waitForVisualStability(() => elementVisualSignature(target));
 
   const { capture, html, converted, sceneRoot, missingImages } = await captureElementForOpenPencil(target, {
     selector: sourceSelector,
     url: globalThis.location.href,
+    requestAsset: options.requestAsset,
   });
   const countNodes = (node) => 1 + (node.children || []).reduce((total, child) => total + countNodes(child), 0);
   const capturedTags = Object.fromEntries(Object.entries(capture.nodes.reduce((counts, node) => {

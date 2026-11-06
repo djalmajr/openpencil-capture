@@ -11,7 +11,6 @@ try {
   const page = await context.newPage();
   await page.goto(url, { waitUntil:"networkidle", timeout:60_000 });
   await page.locator(targetSelector).waitFor({ state:"visible", timeout:30_000 });
-  await page.addScriptTag({ path:new URL("dist/extension/bridge.js", root).pathname });
   await page.evaluate(() => {
     Object.defineProperty(globalThis, "chrome", {
       configurable:true,

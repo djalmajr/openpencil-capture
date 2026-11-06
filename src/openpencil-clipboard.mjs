@@ -25,7 +25,7 @@ export function createOpenPencilClipboardHtml(nodes, images = new Map()) {
   return `<!--(openpencil)${encodeBase64(deflateSync(new TextEncoder().encode(JSON.stringify(data))))}(/openpencil)-->`;
 }
 
-export async function loadTreeImages(root, loadImage = loadImageBytes) {
+export async function loadTreeImages(root, loadImage) {
   const images = new Map();
   const hashes = new Map();
   const missing = [];
@@ -43,7 +43,8 @@ export async function loadTreeImages(root, loadImage = loadImageBytes) {
 }
 
 export async function createClipboardFromTree(root, options = {}) {
-  const {images, hashes, missing} = await loadTreeImages(root, options.loadImage);
+  const loadImage = options.loadImage || ((url, size) => loadImageBytes(url, size, {requestAsset:options.requestAsset}));
+  const {images, hashes, missing} = await loadTreeImages(root, loadImage);
   const sceneRoot = toSceneNodes(root, hashes);
   return {sceneRoot, missingImages:missing, html:createOpenPencilClipboardHtml([sceneRoot], images)};
 }

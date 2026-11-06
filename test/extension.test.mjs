@@ -78,16 +78,7 @@ describe("extension clipboard contract", () => {
     expect(content).toContain('globalThis.removeEventListener("keydown", cancelFromKeyboard, true)');
   });
 
-  test("marks the live target across isolated and main extension worlds", async () => {
-    const content = await readSource("src/extension/content.mjs");
-    const bridge = await readSource("src/extension/main-world-bridge.mjs");
-    expect(content).toContain('const TARGET_ATTRIBUTE = "data-openpencil-capture-target"');
-    expect(content).toContain("sourceSelector");
-    expect(content).toContain("target.isConnected");
-    expect(bridge).toContain("request.sourceSelector");
-  });
-
-  test("injects the picker and capture bridge into accessible iframe documents", async () => {
+  test("injects the picker into accessible iframe documents", async () => {
     const background = await readSource("src/extension/background.mjs");
     const content = await readSource("src/extension/content.mjs");
     expect(background).toContain("allFrames:true");
@@ -196,6 +187,49 @@ describe("image loading", () => {
   test("the extension fetch returns a typed data URL", async () => {
     const result = await fetchExtensionAsset("https://example.test/a.png", {fetchImpl:async () => new Response(new Blob([PNG], {type:"image/png"}))});
     expect(result).toBe("data:image/png;base64,iVBORw0KGgo=");
+  });
+
+  // Mutation captured: dropping credentials:"omit" lets a captured page's markup pull the user's
+  // authenticated resources from other sites into the clipboard.
+  test("the extension fetch sends no cookies", async () => {
+    const calls = [];
+    await fetchExtensionAsset("https://example.test/a.png", {fetchImpl:async (_url, init) => {
+      calls.push(init);
+      return new Response(new Blob([PNG], {type:"image/png"}));
+    }});
+    expect(calls[0].credentials).toBe("omit");
+  });
+
+  test("the extension fetch refuses anything but http(s) images", async () => {
+    const fetchImpl = async () => new Response(new Blob(["{\"secret\":1}"], {type:"application/json"}));
+    expect(fetchExtensionAsset("file:///etc/hosts", {fetchImpl})).rejects.toThrow("Unsupported asset protocol");
+    expect(fetchExtensionAsset("https://example.test/data.json", {fetchImpl})).rejects.toThrow("not an image");
+  });
+
+  test("the extension fetch accepts an image served with a generic type", async () => {
+    const fetchImpl = async () => new Response(new Blob([PNG], {type:"application/octet-stream"}));
+    expect(await fetchExtensionAsset("https://example.test/a", {fetchImpl})).toStartWith("data:application/octet-stream;base64,");
+  });
+
+  test("asks the extension only after the page's own fetch fails", async () => {
+    const requests = [];
+    const bytes = await loadImageBytes("https://cdn.test/a.png", {width:1, height:1}, {
+      fetchImpl:async () => { throw new TypeError("CORS"); },
+      requestAsset:async (detail) => { requests.push(detail); return "data:image/png;base64,iVBORw0KGgo="; },
+    });
+    expect(requests).toEqual([{url:"https://cdn.test/a.png"}]);
+    expect(Array.from(bytes)).toEqual(Array.from(PNG));
+  });
+
+  test("rasterizes through the extension what the editor cannot decode", async () => {
+    const requests = [];
+    const bytes = await loadImageBytes("https://cdn.test/a.svg", {width:8, height:8}, {
+      fetchImpl:async () => new Response(SVG),
+      requestAsset:async (detail) => { requests.push(detail); return "data:image/png;base64,iVBORw0KGgo="; },
+    });
+    expect(requests[0].url).toStartWith("data:image/svg+xml;base64,");
+    expect(requests[0].rasterize).toEqual({width:8, height:8});
+    expect(Array.from(bytes)).toEqual(Array.from(PNG));
   });
 
   test("rasterizes at twice the displayed size, keeping the source's proportions", () => {

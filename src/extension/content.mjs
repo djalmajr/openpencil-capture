@@ -1,56 +1,42 @@
 import { createSelectionState, selectChild, selectParent, setHoveredTarget } from "../selection/navigation.mjs";
 import { captureProgressForElapsed } from "./capture-progress.mjs";
+import { captureSelection } from "./capture-selection.mjs";
 import { isPageCaptureShortcut, pageCaptureModifier } from "./shortcuts.mjs";
 
 const CONTROLLER_KEY = "__openPencilCaptureController";
-const REQUEST_EVENT = "openpencil-capture:copy-request";
-const RESPONSE_EVENT = "openpencil-capture:copy-response";
-const ASSET_REQUEST_EVENT = "openpencil-capture:asset-request";
-const ASSET_RESPONSE_EVENT = "openpencil-capture:asset-response";
-const TARGET_ATTRIBUTE = "data-openpencil-capture-target";
 const FRAME_ACTIVITY_MESSAGE = "openpencil-capture:frame-activity";
 const FRAME_CANCEL_MESSAGE = "openpencil-capture:frame-cancel";
+const CAPTURE_TIMEOUT_MS = 65_000;
+// Chrome refuses extension messages above 64 MiB.
+const MAX_CLIPBOARD_CHARACTERS = 60 * 1024 * 1024;
 
-document.documentElement.setAttribute("data-openpencil-capture-extension", "ready");
-globalThis.addEventListener(ASSET_REQUEST_EVENT, async (event) => {
-  let request;
-  try { request = JSON.parse(event.detail); } catch { return; }
-  const response = await chrome.runtime.sendMessage({type:"openpencil-capture:fetch-asset",url:request.url,rasterize:request.rasterize});
-  globalThis.dispatchEvent(new CustomEvent(ASSET_RESPONSE_EVENT, {
-    detail:JSON.stringify({id:request.id,dataUrl:response?.ok ? response.dataUrl : null}),
-  }));
-});
+async function requestAsset(detail) {
+  const response = await chrome.runtime.sendMessage({type:"openpencil-capture:fetch-asset", ...detail});
+  return response?.ok ? response.dataUrl : null;
+}
 
+// Runs in the isolated world on purpose: page scripts must have no channel to the extension's
+// privileged fetch or to the clipboard payload.
 function copyDesign(target, sourceSelector) {
-  const id = crypto.randomUUID();
-  const targetToken = crypto.randomUUID();
-  const previousTargetToken = target.getAttribute(TARGET_ATTRIBUTE);
-  target.setAttribute(TARGET_ATTRIBUTE, targetToken);
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => finish({ ok:false, error:"Capture timed out" }), 65_000);
-    const onResponse = (event) => {
-      let response;
-      try {
-        response = JSON.parse(event.detail);
-      } catch {
-        return;
-      }
-      if (response?.id === id) finish(response);
-    };
-    const finish = (response) => {
-      clearTimeout(timeout);
-      globalThis.removeEventListener(RESPONSE_EVENT, onResponse);
-      if (target.getAttribute(TARGET_ATTRIBUTE) === targetToken) {
-        if (previousTargetToken == null) target.removeAttribute(TARGET_ATTRIBUTE);
-        else target.setAttribute(TARGET_ATTRIBUTE, previousTargetToken);
-      }
-      resolve(response);
-    };
-    globalThis.addEventListener(RESPONSE_EVENT, onResponse);
-    globalThis.dispatchEvent(new CustomEvent(REQUEST_EVENT, {
-      detail:JSON.stringify({ id, selector:`[${TARGET_ATTRIBUTE}="${targetToken}"]`, sourceSelector }),
-    }));
+  let timeout;
+  const timedOut = new Promise((resolve) => {
+    timeout = setTimeout(() => resolve({ok:false, error:"Capture timed out"}), CAPTURE_TIMEOUT_MS);
   });
+  const captured = captureSelection(target, sourceSelector, {requestAsset})
+    .then((result) => ({ok:true, ...result}))
+    .catch((error) => ({ok:false, error:error.message}));
+  return Promise.race([captured, timedOut]).finally(() => clearTimeout(timeout));
+}
+
+async function writeToClipboard(html) {
+  if (html.length > MAX_CLIPBOARD_CHARACTERS) {
+    return {ok:false, error:"This capture is too large to copy. Select a smaller element."};
+  }
+  try {
+    return await chrome.runtime.sendMessage({type:"openpencil-capture:write-clipboard", html});
+  } catch (error) {
+    return {ok:false, error:error.message};
+  }
 }
 
 function selectorFor(element) {
@@ -215,8 +201,14 @@ function install() {
     }
   }
 
+  // Left running, another frame's picker would swallow the next click and overwrite the clipboard.
+  function stopOtherFrames() {
+    if (isEmbeddedDocument) globalThis.top.postMessage({type:FRAME_CANCEL_MESSAGE}, "*");
+    else broadcastFrameCancel();
+  }
+
   function onFrameMessage(event) {
-    if (!active || event.source === globalThis) return;
+    if (!active || event.source === globalThis || phase === "success") return;
     if (event.data?.type === FRAME_CANCEL_MESSAGE) {
       broadcastFrameCancel();
       teardown();
@@ -265,10 +257,7 @@ function install() {
     if (!active) return;
     let completion = response;
     if (response?.ok) {
-      completion = await chrome.runtime.sendMessage({
-        type:"openpencil-capture:write-clipboard",
-        html:response.html,
-      });
+      completion = await writeToClipboard(response.html);
     }
     if (!completion?.ok) {
       stopCaptureProgress();
@@ -281,6 +270,7 @@ function install() {
     await new Promise((resolve) => setTimeout(resolve, 120));
     if (!active) return;
     showView("success");
+    stopOtherFrames();
     setTimeout(teardown, 2400);
   }
 
@@ -296,8 +286,7 @@ function install() {
     if (event.key === "Escape" || event.key === "Esc" || event.keyCode === 27) {
       event.preventDefault();
       event.stopImmediatePropagation();
-      if (isEmbeddedDocument) globalThis.top.postMessage({type:FRAME_CANCEL_MESSAGE}, "*");
-      else broadcastFrameCancel();
+      stopOtherFrames();
       teardown();
       return true;
     }

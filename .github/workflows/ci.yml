@@ -21,3 +21,4 @@ jobs:
       - run: bunx playwright install --with-deps chromium
       - run: bun run verify
       - run: bun run smoke:iframe
+      - run: bun run smoke:extension-iframe

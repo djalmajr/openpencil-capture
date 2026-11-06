@@ -35,7 +35,6 @@ function respondWith(work, sendResponse) {
 chrome.action.onClicked.addListener(async (tab) => {
   if (!tab.id) return;
   const target = { tabId:tab.id, allFrames:true };
-  await chrome.scripting.executeScript({ target, world:"MAIN", files:["bridge.js"] });
   await chrome.scripting.executeScript({ target, files:["content.js"] });
 });
 
@@ -46,6 +45,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (message?.type !== "openpencil-capture:fetch-asset" || typeof message.url !== "string") return false;
   return respondWith(async () => {
     if (message.rasterize) {
+      if (!message.url.startsWith("data:image/")) throw new Error("Only image data can be rasterized");
       return askOffscreenDocument({type:"openpencil-capture:offscreen-rasterize", dataUrl:message.url, box:message.rasterize});
     }
     return {ok:true, dataUrl:await fetchExtensionAsset(message.url)};

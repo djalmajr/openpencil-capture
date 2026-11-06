@@ -1,0 +1,6 @@
+dist/
+node_modules/
+artifacts/
+*.capture.json
+*.capture-tree.json
+.DS_Store

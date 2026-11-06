@@ -1,0 +1,34 @@
+{
+  "name": "@djalmajr/openpencil-capture",
+  "version": "0.1.0",
+  "description": "Capture rendered web UI as editable OpenPencil layers.",
+  "type": "module",
+  "bin": {
+    "openpencil-capture": "./bin/openpencil-capture.mjs"
+  },
+  "scripts": {
+    "build": "bun scripts/build-extension.mjs",
+    "capture:source": "bun scripts/capture-source-screenshot.mjs",
+    "compare:visual": "bun scripts/compare-visual.mjs",
+    "smoke:picker": "bun scripts/smoke-picker.mjs",
+    "smoke:iframe": "bun scripts/smoke-iframe-picker.mjs",
+    "smoke:extension-iframe": "bun scripts/smoke-extension-iframe.mjs",
+    "smoke:paste": "bun scripts/smoke-paste.mjs",
+    "test": "bun test",
+    "verify": "bun test && bun scripts/build-extension.mjs",
+    "smoke:webkit": "swiftc -O scripts/smoke-webkit-paste.swift -o artifacts/smoke-webkit-paste && artifacts/smoke-webkit-paste artifacts/smoke-paste/envelope.txt https://app.openpencil.dev/ artifacts/smoke-paste/webkit.png",
+    "render:mark": "bun scripts/render-mark.mjs"
+  },
+  "dependencies": {
+    "@open-pencil/scene-graph": "0.16.0",
+    "fflate": "0.8.2",
+    "playwright": "1.61.1"
+  },
+  "devDependencies": {
+    "@open-pencil/core": "0.16.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/djalmajr/openpencil-capture.git"
+  }
+}

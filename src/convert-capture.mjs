@@ -428,7 +428,7 @@ function imageMode(node) {
   return node.styles.objectFit === "contain" ? "fit" : node.styles.objectFit === "cover" ? "fill" : "stretch";
 }
 
-function penBlendMode(value) {
+function cssBlendMode(value) {
   const modes = new Map([
     ["normal","normal"],["darken","darken"],["multiply","multiply"],["color-burn","colorBurn"],
     ["lighten","light"],["screen","screen"],["color-dodge","colorDodge"],["overlay","overlay"],
@@ -604,7 +604,7 @@ export function convertCaptureToTree(capture) {
     const repeatingPattern = repeatingLinearPattern(node);
     const backgroundFill = repeatingPattern ? null : cssBackgroundToFill(node,{baseUrl:capture.source?.url});
     const backgroundColor = safeColor(node.styles.backgroundColor);
-    const blendMode = penBlendMode(node.styles.mixBlendMode);
+    const blendMode = cssBlendMode(node.styles.mixBlendMode);
     const shadows = parseCssShadows(node.styles.boxShadow);
     const border = Object.keys(borderProperties(node.styles)).length ? borderProperties(node.styles) : shadowRingBorder(shadows);
     const effects = shadows.filter((shadow) => !(border.stroke === shadow.color && border.strokeWidth === shadow.spread && shadow.offset.x === 0 && shadow.offset.y === 0 && shadow.blur === 0));

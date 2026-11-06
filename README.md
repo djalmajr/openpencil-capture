@@ -2,7 +2,7 @@
 
 Capture rendered web elements and paste them as editable layers directly in [OpenPencil](https://openpencil.dev).
 
-The project contains a browser-side capture library, a Chrome Manifest V3 extension with a Paper-like picker, and a deterministic converter and CLI. It succeeds [Pen Capture](https://github.com/djalmajr/pen-capture), which is no longer maintained.
+The project contains a browser-side capture library, a Chrome Manifest V3 extension with an element picker, and a deterministic converter and CLI.
 
 ## Install
 

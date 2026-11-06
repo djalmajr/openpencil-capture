@@ -13,7 +13,11 @@ const server = Bun.serve({
       #fixture{width:240px;padding:16px;border:1px solid rgb(220,220,220);border-radius:8px}
       button{height:36px;padding:0 16px;background:rgb(24,24,27);color:white;border:0;border-radius:6px}
     </style><body><main id="fixture"><button type="button">Create board</button></main>
-    <form id="login"><input type="password" value="hunter2-secret"><input type="hidden" value="csrf-secret"><input type="text" value="Visible name"></form></body></html>`, {
+    <form id="login"><input type="password" value="hunter2-secret"><input type="hidden" value="csrf-secret"><input type="text" value="Visible name">
+      <input type="text" style="-webkit-text-security:disc" value="css-input-secret">
+      <div style="-webkit-text-security:square"><span>css-span-secret</span></div>
+      <textarea style="display:none">unrendered-secret</textarea>
+      <input type="text" style="visibility:hidden" value="invisible-secret"></form></body></html>`, {
       headers: {"content-type": "text/html; charset=utf-8"}
     });
   }
@@ -54,7 +58,7 @@ describe("captureUrl", () => {
   });
 
   // Regression: password fields were copied in clear text, behind the bullets the page shows.
-  test("never records password or hidden field values", async () => {
+  test("never records values the page masks or does not render", async () => {
     const directory = await mkdtemp(join(tmpdir(), "openpencil-capture-url-"));
     try {
       const output = join(directory, "login.capture.json");
@@ -62,12 +66,16 @@ describe("captureUrl", () => {
       const serialized = await readFile(output, "utf8");
       expect(serialized).not.toContain("hunter2-secret");
       expect(serialized).not.toContain("csrf-secret");
+      expect(serialized).not.toContain("css-input-secret");
+      expect(serialized).not.toContain("css-span-secret");
+      expect(serialized).not.toContain("unrendered-secret");
+      expect(serialized).not.toContain("invisible-secret");
       const capture = JSON.parse(serialized);
       const tree = convertCaptureToTree(capture);
       const texts = [];
       const collect = (node) => { if (node.type === "text") texts.push(node.content); node.children?.forEach(collect); };
       collect(tree.root);
-      expect(texts).toEqual(["••••••••••••••", "Visible name"]);
+      expect(texts).toEqual(["••••••••••••••", "Visible name", "••••••••••••••••", "•••••••••••••••"]);
     } finally {
       await rm(directory, {recursive: true, force: true});
     }

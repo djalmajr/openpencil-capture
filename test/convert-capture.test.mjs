@@ -328,6 +328,13 @@ describe("convertCaptureToTree", () => {
     expect(root.children[1]).toMatchObject({type:"frame",fill:"#F0B100",width:8,height:8});
   });
 
+  test("ignores a clear-text value recorded for a password field", () => {
+    const capture = {format:"openpencil-capture-ir",version:1,rootPath:"0",label:"Login",source:{},nodes:[
+      {path:"0",parentPath:null,tag:"input",name:"root",text:null,rect:{x:0,y:0,width:200,height:36},attributes:{type:"password",value:"old-secret"},styles:{...rootStyles,color:"rgb(0, 0, 0)",fontSize:"14px",lineHeight:"20px"}},
+    ]};
+    expect(JSON.stringify(convertCaptureToTree(capture))).not.toContain("old-secret");
+  });
+
   // Regression: a hidden root crashed with "Cannot set properties of null".
   test("explains that a hidden selection cannot be captured", () => {
     const capture = {format:"openpencil-capture-ir",version:1,rootPath:"0",label:"Hidden",source:{},nodes:[

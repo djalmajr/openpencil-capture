@@ -404,7 +404,7 @@ function makeTextUnderline(node, parent, name = `${semanticLayerName(node)} · U
 function controlText(node, parent) {
   if (!["input", "textarea", "select"].includes(node.tag) || !isVisible(node)) return null;
   if (["checkbox", "radio", "range", "file", "hidden"].includes(node.attributes.type)) return null;
-  const value = node.attributes.selectedLabel || node.attributes.value || node.attributes.maskedValue;
+  const value = node.attributes.selectedLabel || (node.attributes.type === "password" ? null : node.attributes.value) || node.attributes.maskedValue;
   const hasValue = Boolean(value);
   const content = value || node.attributes.placeholder;
   if (!content) return null;

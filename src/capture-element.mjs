@@ -56,6 +56,20 @@ export function effectiveFilter(node, root, styleOf = getComputedStyle) {
   return filters.join(" ") || "none";
 }
 
+const maskText = (value) => value.replace(/\S/g, "•");
+
+function isMaskedByCss(computed) {
+  return Boolean(computed.webkitTextSecurity) && computed.webkitTextSecurity !== "none";
+}
+
+function maskSnapshot(snapshot) {
+  return {
+    ...snapshot,
+    text:snapshot.text && maskText(snapshot.text),
+    textRuns:snapshot.textRuns.map((run) => ({...run, text:maskText(run.text)})),
+  };
+}
+
 function ellipsisWidth(computed) {
   const context = document.createElement("canvas").getContext("2d");
   if (!context) return Number.parseFloat(computed.fontSize) * 0.75;
@@ -140,20 +154,26 @@ export function captureElement(root, options = {}) {
   }
   const rootRect = root.getBoundingClientRect();
   const nodes = [];
+  let anyMasked = false;
   const visit = (node, path, parentPath) => {
     const rect = node.getBoundingClientRect();
     const computed = getComputedStyle(node);
-    const { text, textRect, textRuns } = directTextSnapshot(node, rootRect, computed);
+    const masked = isMaskedByCss(computed);
+    anyMasked ||= masked;
+    const snapshot = directTextSnapshot(node, rootRect, computed);
+    const { text, textRect, textRuns } = masked ? maskSnapshot(snapshot) : snapshot;
     const attributes = Object.fromEntries(Array.from(node.attributes)
       .filter((attribute) => CAPTURED_ATTRIBUTES.has(attribute.name))
       .map((attribute) => [attribute.name, attribute.value]));
     if (["INPUT", "TEXTAREA", "SELECT"].includes(node.tagName)) {
-      // The page shows bullets for a password, and a capture may end up in a shared design file.
-      if (node.type === "password") attributes.maskedValue = "•".repeat(node.value.length);
-      else if (node.type !== "hidden") attributes.value = node.value;
+      // A capture may end up in a shared design file, so it holds only what the page shows:
+      // bullets for a masked value, and nothing for a control that is not rendered.
+      const rendered = node.getClientRects().length > 0 && computed.visibility !== "hidden";
+      if (rendered && (node.type === "password" || masked)) attributes.maskedValue = "•".repeat(node.value.length);
+      else if (rendered && node.type !== "hidden") attributes.value = node.value;
       attributes.disabled = node.disabled;
       if ("checked" in node) attributes.checked = node.checked;
-      if (node.tagName === "SELECT") attributes.selectedLabel = node.selectedOptions[0]?.textContent?.trim() || "";
+      if (node.tagName === "SELECT" && rendered && !masked) attributes.selectedLabel = node.selectedOptions[0]?.textContent?.trim() || "";
     }
     if (node.tagName === "CANVAS") {
       try { attributes.dataUrl = canvasSnapshot(node); } catch { attributes.dataUrl = null; }
@@ -184,7 +204,7 @@ export function captureElement(root, options = {}) {
   return {
     format: CAPTURE_FORMAT, version: CAPTURE_VERSION,
     label: options.label
-      || root.innerText?.split("\n").map((line) => line.trim()).find(Boolean)?.slice(0, 96)
+      || (anyMasked ? nodes.find((node) => node.text)?.text : root.innerText?.split("\n").map((line) => line.trim()).find(Boolean))?.slice(0, 96)
       || root.getAttribute("aria-label")
       || root.getAttribute("data-slot")
       || root.tagName.toLowerCase(),

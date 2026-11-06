@@ -76,6 +76,21 @@ try {
     throw new Error(`The page reached the extension: ${JSON.stringify({secretReads, pageChannels})}`);
   }
 
+  // Scripted input must not stand in for the user: no capture may start from it.
+  await page.mouse.move(5, 5);
+  const scriptedCapture = await page.evaluate(async () => {
+    document.body.click();
+    for (const init of [{key:"Enter"}, {key:"Enter", metaKey:true}, {key:"Enter", ctrlKey:true}]) {
+      document.dispatchEvent(new KeyboardEvent("keydown", {bubbles:true, ...init}));
+    }
+    await new Promise((resolve) => setTimeout(resolve, 800));
+    const view = (name) => !document.getElementById("__openpencil_capture_host__").shadowRoot.querySelector(name).hidden;
+    return {capturing:view(".capturing-view"), success:view(".success-view"), selecting:view(".selection-view")};
+  });
+  if (scriptedCapture.capturing || scriptedCapture.success || !scriptedCapture.selecting) {
+    throw new Error(`Page scripts started a capture: ${JSON.stringify(scriptedCapture)}`);
+  }
+
   const target = frame.locator("#payout");
   await frame.locator("#__openpencil_capture_host__").waitFor({state:"attached"});
   await target.hover({position:{x:40, y:40}});

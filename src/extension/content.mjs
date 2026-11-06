@@ -15,8 +15,8 @@ async function requestAsset(detail) {
   return response?.ok ? response.dataUrl : null;
 }
 
-// Runs in the isolated world on purpose: page scripts must have no channel to the extension's
-// privileged fetch or to the clipboard payload.
+// Runs in the isolated world on purpose: page scripts get no channel to the extension's fetch,
+// and cannot alter the clipboard payload.
 function copyDesign(target, sourceSelector) {
   let timeout;
   const timedOut = new Promise((resolve) => {
@@ -174,8 +174,9 @@ function install() {
     Object.assign(outline.style, { display:"block", left:`${rect.left}px`, top:`${rect.top}px`, width:`${rect.width}px`, height:`${rect.height}px` });
   }
 
+  // Page scripts can dispatch events too. Only the user's own input may select or capture.
   function onPointerMove(event) {
-    if (!active || phase !== "selection") return;
+    if (!event.isTrusted || !active || phase !== "selection") return;
     toolbar.classList.remove("frame-inactive");
     if (isEmbeddedDocument) globalThis.top.postMessage({type:FRAME_ACTIVITY_MESSAGE}, "*");
     lastPointer = {x:event.clientX,y:event.clientY};
@@ -275,14 +276,14 @@ function install() {
   }
 
   function onClick(event) {
-    if (!active || phase !== "selection" || event.target === host || host.contains(event.target)) return;
+    if (!event.isTrusted || !active || phase !== "selection" || event.target === host || host.contains(event.target)) return;
     event.preventDefault();
     event.stopImmediatePropagation();
     capture(selection.current, event.target);
   }
 
   function cancelFromKeyboard(event) {
-    if (!active) return false;
+    if (!event.isTrusted || !active) return false;
     if (event.key === "Escape" || event.key === "Esc" || event.keyCode === 27) {
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -294,7 +295,7 @@ function install() {
   }
 
   function onKeyDown(event) {
-    if (!active || cancelFromKeyboard(event)) return;
+    if (!event.isTrusted || !active || cancelFromKeyboard(event)) return;
     if (phase !== "selection") return;
     if (event.key === "ArrowUp") { event.preventDefault(); selectParent(selection, document.documentElement); selectionSelector = selectorFor(selection.current); return updateOutline(); }
     if (event.key === "ArrowDown") { event.preventDefault(); selectChild(selection); selectionSelector = selectorFor(selection.current); return updateOutline(); }

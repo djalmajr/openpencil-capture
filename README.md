@@ -54,6 +54,10 @@ Before serializing, the extension waits for SVG geometry to stabilize so animate
 
 Images and canvas pixels travel inside the clipboard, so pasting needs no network.
 
+### Sensitive values
+
+A capture holds only what the page shows. Values the page masks paste as bullets, both `type=password` fields and anything using `-webkit-text-security`. Values of `type=hidden` fields and of controls that are not rendered are never read.
+
 ### Known limitations
 
 Limits of the capture model:
@@ -69,10 +73,11 @@ Limits of the capture model:
 - A percentage `border-radius` is read as pixels, and `overflow:auto` or `scroll` containers do not clip.
 - Colors outside `rgb`, `oklch`, `oklab` and `lab` are dropped, and transparent text becomes black.
 - `background-repeat`, `background-size` lengths, dashed strokes and `<pre>` whitespace are not preserved.
+- A text input moved off-screen or clipped with CSS keeps its value as a layer, even though the page does not show it.
+- Clicking the toolbar icon during the success message can leave iframes in selection mode. Press `Esc` to stop them.
 
 When a resource cannot be read, or the clipboard is misused:
 
-- Password values paste as bullets, and hidden field values are never read.
 - An image behind a cross-origin login cannot be embedded, because the extension fetches without cookies.
 - A cross-origin canvas the browser refuses to read becomes a transparent `Canvas · Snapshot unavailable` frame.
 - An image neither the page nor the extension can fetch leaves a `· Image unavailable` layer.

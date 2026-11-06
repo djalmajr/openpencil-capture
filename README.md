@@ -117,3 +117,7 @@ The comparison writes `report.json`, `report.html`, `side-by-side.png` and `diff
 ## Icons
 
 The icons derive from the official OpenPencil app icon and mark, which are MIT licensed: see [`assets/brand/LICENSE`](assets/brand/LICENSE). The toolbar mark is rendered from `assets/brand/mark-micro.svg` with `bun run render:mark`, through a browser, because ImageMagick paints this artwork black.
+
+## License
+
+[MIT](LICENSE).

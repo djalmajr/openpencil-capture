@@ -20,7 +20,7 @@ CI (`.github/workflows/ci.yml`) runs `bun run verify` and `smoke:iframe`. The ot
 
 ## Manual
 
-Automation cannot reach the installed desktop app here: macOS Accessibility is off for the agent, and the app is single-instance.
+Automation cannot reach the installed desktop app: macOS Accessibility is off for agents, and the app is single-instance. Run this check when changing the clipboard contract or bumping `@open-pencil/*`.
 
 1. Load `dist/extension` in Chrome.
 2. Capture an element on any page with images.
@@ -42,8 +42,8 @@ Date: 2026-11-06. macOS 26.7.1, OpenPencil packages 0.16.0, Playwright Chromium 
 | `smoke:paste` | PASS | RMSE 0.0626, 65 layers, 5 of 5 image fills with bytes |
 | `smoke:webkit` | PASS | HTML flavor read as empty, one `read_text`, same 65 layers, 5 of 5 image fills with bytes |
 | CLI `capture`, `verify`, `convert`, `clipboard` | PASS | One-element fixture |
-| Manual paste in the installed desktop app | NOT RUN | Needs a person |
-| Chrome writing to the real macOS pasteboard | NOT RUN | Smokes run headless with an isolated clipboard; `smoke:webkit` writes the bytes itself, assuming Chrome's `<meta charset='utf-8'>` prefix |
+| Manual paste in the installed desktop app | PASS | Done by the maintainer in Chrome and OpenPencil; layers pasted correctly |
+| Chrome writing to the real macOS pasteboard | PASS | Exercised by the same manual paste |
 | Chrome Web Store packaging, Windows, Linux | NOT RUN | Out of scope |
 
 The hosted editor shows `2 font faces are unavailable or substituted` after this paste. A bold text created natively there, with no capture involved, triggers the same warning.

@@ -30,5 +30,6 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/djalmajr/openpencil-capture.git"
-  }
+  },
+  "license": "MIT"
 }

@@ -566,3 +566,25 @@ describe("CSS masks and clip paths", () => {
     expect(root.type).toBe("frame");
   });
 });
+
+describe("elliptical corners", () => {
+  const corners = (value) => ({borderTopLeftRadius:value, borderTopRightRadius:value, borderBottomRightRadius:value, borderBottomLeftRadius:value});
+  test("draws the background, shadows and border on vectors of the exact outline", () => {
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 100, 50], {...corners("50%"), backgroundColor:"rgb(255, 0, 0)", boxShadow:"rgb(0, 0, 0) 0px 2px 4px 0px",
+      borderTopWidth:"2px", borderRightWidth:"2px", borderBottomWidth:"2px", borderLeftWidth:"2px", borderTopStyle:"dashed", borderRightStyle:"dashed", borderBottomStyle:"dashed", borderLeftStyle:"dashed",
+      borderTopColor:"rgb(0, 0, 255)", borderRightColor:"rgb(0, 0, 255)", borderBottomColor:"rgb(0, 0, 255)", borderLeftColor:"rgb(0, 0, 255)"}]));
+    expect(root.fill).toBeUndefined();
+    expect(root.stroke).toBeUndefined();
+    expect(root.effect).toBeUndefined();
+    const [background, border] = root.children;
+    expect(background).toMatchObject({type:"path", fill:"#FF0000", effect:{shadowType:"outer", color:"#000000"}, geometry:"M 50 0 H 50 A 50 25 0 0 1 100 25 V 25 A 50 25 0 0 1 50 50 H 50 A 50 25 0 0 1 0 25 V 25 A 50 25 0 0 1 50 0 Z"});
+    // A dashed border runs along the middle of the ring, its corners shrunk by half its width.
+    expect(border).toMatchObject({type:"path", stroke:"#0000FF", strokeWidth:2, dashPattern:[6, 4], geometry:expect.stringContaining("A 49 24 0 0 1 99 25")});
+  });
+
+  test("keeps circular corners on the frame", () => {
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 100, 50], corners("10px")]));
+    expect(root.cornerRadius).toBe(10);
+    expect(root.children).toEqual([]);
+  });
+});

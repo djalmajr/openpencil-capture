@@ -82,6 +82,8 @@ describe("the pasted design looks like the page", () => {
     "a color filter over a gradient, a border and a child": box("margin:8px;width:144px;height:80px;background:linear-gradient(90deg, rgb(200, 60, 30), rgb(30, 120, 200));border:6px solid rgb(40, 160, 60);box-sizing:border-box;filter:sepia(0.6) hue-rotate(40deg) saturate(1.4)", `<div style="margin:14px;width:40px;height:30px;background:rgb(250, 220, 40)"></div>`),
     "a grayscale and darkened dot grid": box("filter:grayscale(1) brightness(0.7);background:rgb(250, 200, 200) radial-gradient(circle, rgb(200, 30, 30) 4px, transparent 4px) 0 0 / 16px 16px"),
     "an inverted box with a filtered child": box("background:rgb(255, 255, 255);filter:invert(1)", `<div style="margin:16px;width:80px;height:40px;background:rgb(20, 120, 220);filter:contrast(1.6)"></div>`),
+    "an ellipse drawn with border-radius 50% and a border": box("background:rgb(240, 180, 40);border:6px solid rgb(40, 40, 120);box-sizing:border-box;border-radius:50%"),
+    "corners with two radii each, and borders of different widths": box("background:linear-gradient(rgb(0, 160, 200), rgb(0, 60, 120));border-style:solid;border-color:rgb(220, 60, 60);border-width:4px 10px 6px 2px;box-sizing:border-box;border-radius:60px 10px 30px 0 / 30px 40px 10px 0"),
     "a polygon clip path": box("background:rgb(30, 130, 220);clip-path:polygon(50% 0, 100% 100%, 0 100%)"),
     "a circle clip path off center": box("background:linear-gradient(rgb(255, 120, 0), rgb(120, 0, 200));clip-path:circle(40px at 60% 50%)"),
     "an inset clip path with round corners": box("background:rgb(220, 40, 90);clip-path:inset(10px 20px round 12px)"),

@@ -24,6 +24,66 @@ function cornerRadius(node) {
   return values.every((value) => value === values[0]) ? values[0] : values;
 }
 
+// Each corner's [horizontal, vertical] radii, scaled as CSS does when neighbors overlap along a
+// side, or null when every corner is circular and the editor's own corners draw them.
+function ellipticalCorners(node) {
+  const {width, height} = node.rect;
+  const radii = CORNERS.map((key) => {
+    const [horizontal, vertical = horizontal] = String(node.styles[key] || "0px").trim().split(/\s+/);
+    const x = Math.max(0, resolveLength(horizontal, width) ?? 0);
+    const y = Math.max(0, resolveLength(vertical, height) ?? 0);
+    return x > 0 && y > 0 ? [x, y] : [0, 0];
+  });
+  const [tl, tr, br, bl] = radii;
+  const scale = Math.min(1, ...[[width, tl[0] + tr[0]], [height, tr[1] + br[1]], [width, br[0] + bl[0]], [height, bl[1] + tl[1]]]
+    .filter(([, sum]) => sum > 0).map(([side, sum]) => side / sum));
+  const scaled = radii.map(([x, y]) => [x * scale, y * scale]);
+  return scaled.some(([x, y]) => Math.abs(x - y) > 0.5) ? scaled : null;
+}
+
+// A box with elliptical corners as path data; `radii` go top left, top right, bottom right, bottom left.
+function roundedBoxPath({x, y, width, height}, radii) {
+  const [tl, tr, br, bl] = radii.map(([rx, ry]) => rx > 0 && ry > 0 ? [rx, ry] : [0, 0]);
+  const arc = ([rx, ry], ex, ey) => rx > 0 ? `A ${round(rx)} ${round(ry)} 0 0 1 ${round(ex)} ${round(ey)}` : `L ${round(ex)} ${round(ey)}`;
+  return [
+    `M ${round(x + tl[0])} ${round(y)}`, `H ${round(x + width - tr[0])}`, arc(tr, x + width, y + tr[1]),
+    `V ${round(y + height - br[1])}`, arc(br, x + width - br[0], y + height),
+    `H ${round(x + bl[0])}`, arc(bl, x, y + height - bl[1]),
+    `V ${round(y + tl[1])}`, arc(tl, x + tl[0], y), "Z",
+  ].join(" ");
+}
+
+/**
+ * A box whose corners the editor cannot draw: its background and shadows go on a vector of the
+ * exact outline, and its border on a ring between that outline and the padding box's, whose
+ * corners shrink by the border's widths as CSS draws them. A dashed or dotted border is a stroke
+ * along the middle of the ring.
+ */
+function ellipticalBoxLayers(node, radii, {fills, border, shadows}) {
+  const width = round(node.rect.width);
+  const height = round(node.rect.height);
+  const name = semanticLayerName(node);
+  const outer = roundedBoxPath({x:0, y:0, width, height}, radii);
+  const base = {type:"path", layoutPosition:"absolute", x:0, y:0, width, height, viewBox:[0, 0, width, height]};
+  const layers = [{...base, name:`${name} · Background`, geometry:outer, fill:fills.length ? (fills.length === 1 ? fills[0] : fills) : "#00000000",
+    ...(shadows.length ? {effect:shadows.length === 1 ? shadows[0] : shadows} : {})}];
+  if (!border.stroke) return layers;
+  const widths = typeof border.strokeWidth === "object" ? border.strokeWidth : {top:border.strokeWidth, right:border.strokeWidth, bottom:border.strokeWidth, left:border.strokeWidth};
+  const inset = (amount) => ({x:amount.left, y:amount.top, width:width - amount.left - amount.right, height:height - amount.top - amount.bottom});
+  const shrink = (amount) => radii.map(([rx, ry], index) => [
+    Math.max(0, rx - (index === 0 || index === 3 ? amount.left : amount.right)),
+    Math.max(0, ry - (index < 2 ? amount.top : amount.bottom)),
+  ]);
+  if (border.dashPattern) {
+    const half = Object.fromEntries(Object.entries(widths).map(([side, value]) => [side, value / 2]));
+    layers.push({...base, name:`${name} · Border`, geometry:roundedBoxPath(inset(half), shrink(half)), fill:"#00000000",
+      stroke:border.stroke, strokeWidth:Math.max(...Object.values(widths)), strokeLinecap:"butt", dashPattern:border.dashPattern});
+  } else {
+    layers.push({...base, name:`${name} · Border`, geometry:`${outer} ${roundedBoxPath(inset(widths), shrink(widths))}`, fillRule:"evenodd", fill:border.stroke});
+  }
+  return layers;
+}
+
 function parseGradientStop(value) {
   const match = value.match(/^(.*?)(?:\s+(-?[\d.]+)(px|%))?$/);
   const color = gradientColor(match?.[1]?.trim());
@@ -857,6 +917,14 @@ export function convertCaptureToTree(capture) {
       ...(layerOpacity < 1 ? { opacity:round(layerOpacity) } : {}), children:[],
     };
     if (framed) stats.frames += 1; else stats.groups += 1;
+    const elliptical = framed && !clipsText ? ellipticalCorners(node) : null;
+    if (elliptical) {
+      const shadowEffects = effects.filter((effect) => effect.type === "shadow");
+      const others = effects.filter((effect) => effect.type !== "shadow");
+      frame.children.push(...ellipticalBoxLayers(node, elliptical, {fills, border, shadows:shadowEffects}));
+      for (const key of ["fill", "stroke", "strokeWidth", "strokeAlignment", "dashPattern", "effect"]) delete frame[key];
+      if (others.length) frame.effect = others.length === 1 ? others[0] : others;
+    }
     if (!clipsText) {
       childLayers.forEach((layer, index) => frame.children.push({
         type:"rectangle",name:`${semanticLayerName(node)} · Background image${childLayers.length > 1 ? ` ${index + 1}` : ""}`,layoutPosition:"absolute",

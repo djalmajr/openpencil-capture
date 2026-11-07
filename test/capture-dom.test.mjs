@@ -319,10 +319,10 @@ describe("closed limitations, at the edges", () => {
   });
 
   const frameFile = {"https://frames.test/f.html":`<body style="margin:0;font:14px Arial"><p style="margin:0">frame-text</p><p style="margin:45px 0 0 0">hidden-secret</p><p style="position:absolute;left:150px;top:0;margin:0">rs</p></body>`};
-  for (const [name, style] of [["scaled", "transform:scale(2);transform-origin:0 0"], ["turned half a turn", "transform:rotate(180deg)"], ["mirrored", "scale:-1 1"], ["inside a turned box", ""]]) {
+  for (const [name, style] of [["scaled", "transform:scale(2);transform-origin:0 0"], ["turned half a turn", "transform:rotate(180deg)"], ["mirrored", "scale:-1 1"], ["inside a turned box", ""], ["scaled by an SVG viewBox", ""]]) {
     test(`leaves a frame of another origin ${name} empty`, async () => {
       const iframe = `<iframe src="https://frames.test/f.html" style="border:0;width:200px;height:60px;display:block;${style}"></iframe>`;
-      const capture = await captureHtml(`<div id="root" style="width:100px;height:30px;overflow:hidden">${name.startsWith("inside") ? `<div style="rotate:180deg">${iframe}</div>` : iframe}</div>`, "#root", {files:frameFile});
+      const capture = await captureHtml(`<div id="root" style="width:100px;height:30px;overflow:hidden">${name.startsWith("inside") ? `<div style="rotate:180deg">${iframe}</div>` : name.includes("viewBox") ? `<svg width="400" height="60" viewBox="0 0 200 30" style="display:block"><foreignObject width="200" height="30">${iframe}</foreignObject></svg>` : iframe}</div>`, "#root", {files:frameFile});
       expect(leaked(capture, ["frame-text", "hidden-secret", "\"rs\""])).toEqual([]);
     });
   }

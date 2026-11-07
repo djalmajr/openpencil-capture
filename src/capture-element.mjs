@@ -280,10 +280,13 @@ function insetClip(computed, box, clip) {
 // Whether a transform scales, turns, mirrors or skews the element or anything around it, up
 // through the frames that hold it: then its box no longer maps to the screen by a shift, and a
 // frame inside it cannot be clipped to what shows. A translation alone is a shift the boxes
-// already include.
+// already include. An SVG around it (a <foreignObject>) maps it through a viewBox, and a motion
+// path or zoom moves it otherwise too.
 function isTransformed(element) {
   for (let current = element; current;) {
+    if (current.namespaceURI === SVG_NAMESPACE) return true;
     const style = current.ownerDocument.defaultView.getComputedStyle(current);
+    if ((style.offsetPath && style.offsetPath !== "none") || (style.zoom && Number.parseFloat(style.zoom) !== 1)) return true;
     const shiftOnly = style.transform === "none" || /^matrix\(1, 0, 0, 1, [^,]+, [^,)]+\)$/.test(style.transform);
     if (!shiftOnly || (style.rotate && style.rotate !== "none") || (style.scale && style.scale !== "none") || /^\S+ \S+ (?!0px)\S+$/.test(style.translate || "")) return true;
     current = current.assignedSlot || current.parentElement || current.getRootNode().host || current.ownerDocument.defaultView.frameElement || null;

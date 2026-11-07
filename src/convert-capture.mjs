@@ -4,8 +4,21 @@ import { clamp, px, round, splitCssArguments } from "./css-values.mjs";
 
 export { cssColorToHex } from "./css-color.mjs";
 
-function cornerRadius(styles) {
-  const values = [styles.borderTopLeftRadius, styles.borderTopRightRadius, styles.borderBottomRightRadius, styles.borderBottomLeftRadius].map((value) => round(px(value)));
+const CORNERS = ["borderTopLeftRadius", "borderTopRightRadius", "borderBottomRightRadius", "borderBottomLeftRadius"];
+
+// A corner's radius may be `50%` or elliptical (`10px 20%`); the editor's corners are circular, so
+// each takes the smaller of its two radii. CSS then shrinks all of them by the same factor when
+// two neighbors would overlap along a side.
+function cornerRadius(node) {
+  const {width, height} = node.rect;
+  const radii = CORNERS.map((key) => {
+    const [horizontal, vertical = horizontal] = String(node.styles[key] || "0px").trim().split(/\s+/);
+    return Math.max(0, Math.min(resolveLength(horizontal, width) ?? 0, resolveLength(vertical, height) ?? 0));
+  });
+  const [topLeft, topRight, bottomRight, bottomLeft] = radii;
+  const scale = Math.min(1, ...[[width, topLeft + topRight], [height, topRight + bottomRight], [width, bottomRight + bottomLeft], [height, bottomLeft + topLeft]]
+    .filter(([, sum]) => sum > 0).map(([side, sum]) => side / sum));
+  const values = radii.map((radius) => round(radius * scale));
   return values.every((value) => value === values[0]) ? values[0] : values;
 }
 
@@ -349,7 +362,7 @@ function filteredImageNode(node, parent, url) {
   const brightness = filterAmount(filter,"brightness");
   const darkened = Number.isFinite(brightness) && brightness >= 0 && brightness < 1;
   const backgroundColor = safeColor(node.styles.backgroundColor);
-  const radius = cornerRadius(node.styles);
+  const radius = cornerRadius(node);
   const coversBox = placement && placement.region.x === 0 && placement.region.y === 0 && placement.region.width === rect.width && placement.region.height === rect.height;
   const metadata = filter && filter !== "none" ? {metadata:{type:"openpencil-capture-image",filter}} : {};
   if (!(grayscale > 0) && !darkened && !backgroundColor && (coversBox || !radius)) {
@@ -503,7 +516,7 @@ export function convertCaptureToTree(capture) {
       if (!url) { stats.skipped += 1; return null; }
       stats.images += 1;
       if (node.tag === "img") return filteredImageNode(node,parent,url);
-      return {type:"rectangle",name:semanticLayerName(node),layoutPosition:"absolute",...relativeRect(node,parent),fill:{type:"image",url,mode:"stretch"},cornerRadius:cornerRadius(node.styles)};
+      return {type:"rectangle",name:semanticLayerName(node),layoutPosition:"absolute",...relativeRect(node,parent),fill:{type:"image",url,mode:"stretch"},cornerRadius:cornerRadius(node)};
     }
     const backgroundColor = safeColor(node.styles.backgroundColor);
     const blendMode = cssBlendMode(node.styles.mixBlendMode);
@@ -532,12 +545,13 @@ export function convertCaptureToTree(capture) {
       while (svg && svg.tag !== "svg") svg = byPath.get(svg.parentPath);
       if (svg) frameRect = {x:round(node.rect.x-svg.rect.x),y:round(node.rect.y-svg.rect.y),width:round(node.rect.width),height:round(node.rect.height)};
     }
-    const clipped = ["hidden", "clip"].includes(node.styles.overflow);
+    // Scrolled content is clipped like hidden content; the capture keeps the scroll position.
+    const clipped = [node.styles.overflowX, node.styles.overflowY, ...String(node.styles.overflow || "").split(/\s+/)].some((value) => ["hidden", "clip", "auto", "scroll"].includes(value));
     const isHtmlElement = node.namespace !== "http://www.w3.org/2000/svg";
     const framed = node.path === capture.rootPath || isHtmlElement || Boolean(repeatingPattern || layers.length || backgroundColor || border.stroke || effects.length || clipped);
     const frame = framed ? {
       type:"frame", name:semanticLayerName(node), layout:"none", layoutPosition:"absolute",
-      ...frameRect, cornerRadius:cornerRadius(node.styles),
+      ...frameRect, cornerRadius:cornerRadius(node),
       ...(!clipsText && fills.length ? {fill:fills.length === 1 ? fills[0] : fills} : {}),
       ...border, ...(effects.length ? { effect:effects.length === 1 ? effects[0] : effects } : {}), ...(clipped ? { clip:true } : {}),
       ...(px(node.styles.opacity, 1) < 1 ? { opacity:round(px(node.styles.opacity, 1)) } : {}), children:[],
@@ -550,7 +564,7 @@ export function convertCaptureToTree(capture) {
       childLayers.forEach((layer, index) => frame.children.push({
         type:"rectangle",name:`${semanticLayerName(node)} · Background image${childLayers.length > 1 ? ` ${index + 1}` : ""}`,layoutPosition:"absolute",
         ...(layer.region || {x:0,y:0,width:frameRect.width,height:frameRect.height}),
-        ...(layer.region ? {} : {cornerRadius:cornerRadius(node.styles)}),fill:withBlend(layer.fill),
+        ...(layer.region ? {} : {cornerRadius:cornerRadius(node)}),fill:withBlend(layer.fill),
       }));
       if (repeatingPattern) frame.children.push(repeatingPattern);
     }

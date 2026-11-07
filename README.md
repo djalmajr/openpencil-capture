@@ -73,7 +73,7 @@ Limits of the capture model:
 - Text uses the first family in `font-family`, even if the browser fell back to a later one, so its metrics can differ.
 - Open shadow roots, SVG `<use>` sprites and iframe content in a whole-page capture come out empty.
 - Gradients blend in sRGB whatever `in <space>` says, and color hints are ignored. `background-repeat:space` repeats without spacing.
-- A percentage `border-radius` is read as pixels, and `overflow:auto` or `scroll` containers do not clip.
+- An elliptical corner (`border-radius:50%` on a box that is not square, `10px 20px`) becomes circular, with the smaller radius.
 - Dashed strokes and `<pre>` whitespace are not preserved.
 
 When a resource cannot be read, or the clipboard is misused:

@@ -23,8 +23,8 @@ const box = (style, inner = "") => `<div id="root" style="width:160px;height:96p
 // The browser's pixels against the editor's, after capture and paste. A threshold of 1.5% of the
 // channel range allows for antialiasing and image filtering, but not a gradient running the wrong
 // way, a misplaced stop, or an image in the wrong place.
-async function fidelity(html) {
-  const {capture, png} = await captureHtml(html, "#root", {screenshot:true});
+async function fidelity(html, before) {
+  const {capture, png} = await captureHtml(html, "#root", {screenshot:true, before});
   const rendered = await renderInEditor(capture);
   return {difference:meanDifference(await decodePng(png), await decodePng(rendered.png)), tree:rendered.tree};
 }
@@ -49,11 +49,13 @@ describe("the pasted design looks like the page", () => {
     "a tiled image": box(`background:url(${QUADRANTS}) 5px 5px / 20px 20px`),
     "an image contained in its box": box("background:rgb(255, 255, 255)", `<img src="${QUADRANTS}" style="width:160px;height:96px;object-fit:contain;display:block;background:rgb(200, 220, 255)">`),
     "an image covering its box from a corner": box("", `<img src="${QUADRANTS}" style="width:160px;height:96px;object-fit:cover;object-position:0% 0%;display:block">`),
+    "a scrolled container clips its content": `<div id="root" style="width:160px;height:96px;overflow:auto;scrollbar-width:none;background:rgb(255, 255, 255)"><div style="height:300px;margin:0 20px;background:linear-gradient(rgb(255, 0, 0), rgb(0, 0, 255))"></div></div>`,
+    "a circle drawn with a percentage radius": `<div id="root" style="width:96px;height:96px;border-radius:50%;background:rgb(0, 120, 255)"></div>`,
     "an image at its natural size": box("background:rgb(255, 255, 255)", `<img src="${QUADRANTS}" style="width:160px;height:96px;object-fit:none;object-position:right 20px top 10px;display:block">`),
   };
   for (const [name, html] of Object.entries(cases)) {
     test(name, async () => {
-      const {difference} = await fidelity(html);
+      const {difference} = await fidelity(html, name.startsWith("a scrolled") ? () => { document.querySelector("#root").scrollTop = 120; } : undefined);
       expect(difference).toBeLessThan(THRESHOLD);
     });
   }

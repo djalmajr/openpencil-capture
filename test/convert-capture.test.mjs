@@ -26,6 +26,30 @@ describe("cssColorToHex", () => {
 });
 
 describe("convertCaptureToTree", () => {
+  test("resolves percentage and elliptical radii against the box", () => {
+    const radius = (value, width = 80, height = 40) => convertCaptureToTree(ir(["0", "div", [0, 0, width, height], {
+      borderTopLeftRadius:value, borderTopRightRadius:value, borderBottomRightRadius:value, borderBottomLeftRadius:value,
+    }])).root.cornerRadius;
+    expect(radius("50%")).toBe(20);
+    expect(radius("10px 25%")).toBe(10);
+    expect(radius("25% 40%", 100, 100)).toBe(25);
+  });
+
+  // CSS shrinks every corner by the factor that stops the largest pair overlapping.
+  test("shrinks radii that would overlap, as CSS does", () => {
+    const pill = convertCaptureToTree(ir(["0", "div", [0, 0, 120, 40], {borderTopLeftRadius:"9999px", borderTopRightRadius:"9999px", borderBottomRightRadius:"9999px", borderBottomLeftRadius:"9999px"}]));
+    expect(pill.root.cornerRadius).toBe(20);
+    const tab = convertCaptureToTree(ir(["0", "div", [0, 0, 100, 40], {borderTopLeftRadius:"60px", borderTopRightRadius:"60px", borderBottomRightRadius:"0px", borderBottomLeftRadius:"0px"}]));
+    expect(tab.root.cornerRadius).toEqual([40, 40, 0, 0]);
+  });
+
+  test("clips scrolling containers like hidden ones", () => {
+    const clip = (styles) => convertCaptureToTree(ir(["0", "div", [0, 0, 80, 40]], ["0.0", "div", [0, 0, 80, 40], styles])).root.children[0].clip;
+    expect(clip({overflowX:"auto", overflowY:"auto"})).toBe(true);
+    expect(clip({overflow:"visible scroll"})).toBe(true);
+    expect(clip({overflowX:"visible", overflowY:"visible"})).toBeUndefined();
+  });
+
   test("preserves intentional clipping on the captured root", () => {
     const capture = {format:"openpencil-capture-ir",version:1,rootPath:"0",label:"Clipped shell",source:{},nodes:[
       {path:"0",parentPath:null,tag:"div",name:"root",text:null,rect:{x:0,y:0,width:320,height:200},attributes:{},styles:{...rootStyles,overflow:"hidden"}},

@@ -10,7 +10,7 @@ const childServer = Bun.serve({
   fetch() {
     return new Response(`<!doctype html><html><body style="margin:40px;font:16px sans-serif">
       <article id="payout" style="width:420px;padding:24px;border:1px solid #d6d3d1;border-radius:12px">
-        <h2 style="margin:0 0 8px">Payout Threshold</h2>
+        <h2 style="margin:0 0 8px">Payout Threshold <svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="currentColor"/></svg></h2>
         <p style="margin:0">Set the minimum balance required before a payout is triggered.</p>
         <closed-note></closed-note>
       </article>

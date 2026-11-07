@@ -136,6 +136,10 @@ function directTextSnapshot(node, rootRect, computed) {
     const bottom = Math.max(...line.entries.map((entry) => entry.rect.bottom));
     return [{text,rect:{x:left-rootRect.x,y:top-rootRect.y,width:right-left,height:bottom-top}}];
   });
+  return textFromRuns(runs);
+}
+
+function textFromRuns(runs) {
   if (!runs.length) return {text:null,textRect:null,textRuns:[]};
   const left = Math.min(...runs.map((run) => run.rect.x));
   const top = Math.min(...runs.map((run) => run.rect.y));
@@ -148,27 +152,73 @@ function directTextSnapshot(node, rootRect, computed) {
   };
 }
 
-export function captureElement(root, options = {}) {
+// Content the page does not render never enters a capture, since a capture may end up in a shared
+// design file: `display:none`, `content-visibility:hidden` (a closed `<details>`, `hidden=until-found`)
+// and `opacity:0` hide a whole subtree. SVG resources are never rendered in place, and still paint.
+const SVG_RESOURCES = new Set(["defs", "lineargradient", "radialgradient", "pattern", "symbol", "clippath", "mask", "filter", "marker"]);
+const CLIPPING_OVERFLOW = new Set(["hidden", "clip", "auto", "scroll"]);
+
+function isRendered(node) {
+  return typeof node.checkVisibility !== "function" || node.checkVisibility({opacityProperty:true});
+}
+
+// A sliver of a pixel or less shows nothing anyone can read.
+function intersects(box, clip) {
+  return Math.min(box.right, clip.right) - Math.max(box.left, clip.left) > 1
+    && Math.min(box.bottom, clip.bottom) - Math.max(box.top, clip.top) > 1;
+}
+
+// Descendants are clipped to the padding box of an ancestor whose overflow is not visible.
+function contentClip(computed, box, clip) {
+  const left = box.left + Number.parseFloat(computed.borderLeftWidth || 0);
+  const right = box.right - Number.parseFloat(computed.borderRightWidth || 0);
+  const top = box.top + Number.parseFloat(computed.borderTopWidth || 0);
+  const bottom = box.bottom - Number.parseFloat(computed.borderBottomWidth || 0);
+  const clipsX = CLIPPING_OVERFLOW.has(computed.overflowX);
+  const clipsY = CLIPPING_OVERFLOW.has(computed.overflowY);
+  return {
+    left:clipsX ? Math.max(clip.left, left) : clip.left,
+    right:clipsX ? Math.min(clip.right, right) : clip.right,
+    top:clipsY ? Math.max(clip.top, top) : clip.top,
+    bottom:clipsY ? Math.min(clip.bottom, bottom) : clip.bottom,
+  };
+}
+
+export async function captureElement(root, options = {}) {
   if (typeof Element === "undefined" || !(root instanceof Element)) {
     throw new TypeError("captureElement expects a DOM Element");
   }
+  if (!isRendered(root)) throw new Error("The selected element is not visible");
   const rootRect = root.getBoundingClientRect();
+  const view = root.ownerDocument.defaultView;
+  // The page's canvas starts at the document origin: anything left of or above it cannot be seen.
+  const canvas = {left:-view.scrollX, top:-view.scrollY, right:Infinity, bottom:Infinity};
   const nodes = [];
-  let anyMasked = false;
-  const visit = (node, path, parentPath) => {
-    const rect = node.getBoundingClientRect();
+  const visit = (node, path, parentPath, context) => {
+    const tag = node.localName;
+    const inResources = context.inResources || (node.namespaceURI === "http://www.w3.org/2000/svg" && SVG_RESOURCES.has(tag.toLowerCase()));
+    if (node !== root && !inResources && !isRendered(node)) return;
+    const raw = node.getBoundingClientRect();
+    const box = {left:raw.left, top:raw.top, right:raw.right, bottom:raw.bottom};
     const computed = getComputedStyle(node);
+    const clip = computed.position === "fixed" ? canvas : context.clip;
+    // `content-visibility:hidden` renders the element's box and skips everything inside it.
+    const shown = !inResources && computed.visibility === "visible" && computed.contentVisibility !== "hidden";
     const masked = isMaskedByCss(computed);
-    anyMasked ||= masked;
     const snapshot = directTextSnapshot(node, rootRect, computed);
-    const { text, textRect, textRuns } = masked ? maskSnapshot(snapshot) : snapshot;
+    const visibleRuns = shown ? snapshot.textRuns.filter((run) => intersects({
+      left:run.rect.x + rootRect.x, top:run.rect.y + rootRect.y,
+      right:run.rect.x + rootRect.x + run.rect.width, bottom:run.rect.y + rootRect.y + run.rect.height,
+    }, clip)) : [];
+    const visibleSnapshot = visibleRuns.length === snapshot.textRuns.length ? snapshot : textFromRuns(visibleRuns);
+    const { text, textRect, textRuns } = masked ? maskSnapshot(visibleSnapshot) : visibleSnapshot;
     const attributes = Object.fromEntries(Array.from(node.attributes)
       .filter((attribute) => CAPTURED_ATTRIBUTES.has(attribute.name))
       .map((attribute) => [attribute.name, attribute.value]));
     if (["INPUT", "TEXTAREA", "SELECT"].includes(node.tagName)) {
-      // A capture may end up in a shared design file: a masked value stays bullets, and a control
-      // with no box or hidden by `visibility` keeps its value out.
-      const rendered = node.getClientRects().length > 0 && computed.visibility !== "hidden";
+      // A value is kept only if it can be seen: masked values stay bullets, and a control that is
+      // hidden, clipped away, off the canvas or shrunk to a pixel keeps its value out.
+      const rendered = shown && intersects(box, clip);
       if (rendered && (node.type === "password" || masked)) attributes.maskedValue = "•".repeat(node.value.length);
       else if (rendered && node.type !== "hidden") attributes.value = node.value;
       attributes.disabled = node.disabled;
@@ -194,17 +244,18 @@ export function captureElement(root, options = {}) {
       role: node.getAttribute("role"),
       name: node.getAttribute("data-slot") || node.getAttribute("aria-label") || text || node.tagName.toLowerCase(),
       text, textRect, textRuns,
-      rect: { x: rect.x - rootRect.x, y: rect.y - rootRect.y, width: rect.width, height: rect.height },
+      rect: { x: raw.x - rootRect.x, y: raw.y - rootRect.y, width: raw.width, height: raw.height },
       styles: Object.fromEntries(CAPTURED_STYLE_KEYS.map((key) => [key, computed[key]])),
       attributes,
     });
-    Array.from(node.children).forEach((child, index) => visit(child, `${path}.${index}`, path));
+    const childContext = {inResources, clip:contentClip(computed, box, clip)};
+    Array.from(node.children).forEach((child, index) => visit(child, `${path}.${index}`, path, childContext));
   };
-  visit(root, "0", null);
+  visit(root, "0", null, {inResources:false, clip:canvas});
   return {
     format: CAPTURE_FORMAT, version: CAPTURE_VERSION,
     label: options.label
-      || (anyMasked ? nodes.find((node) => node.text)?.text : root.innerText?.split("\n").map((line) => line.trim()).find(Boolean))?.slice(0, 96)
+      || nodes.find((node) => node.text)?.text?.slice(0, 96)
       || root.getAttribute("aria-label")
       || root.getAttribute("data-slot")
       || root.tagName.toLowerCase(),

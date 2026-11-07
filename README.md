@@ -56,7 +56,7 @@ Images and canvas pixels travel inside the clipboard, so pasting needs no networ
 
 ### Sensitive values
 
-Values the page masks paste as bullets, both `type=password` fields and anything using `-webkit-text-security`. Values of `type=hidden` fields and of controls under `display:none` or `visibility:hidden` are never read.
+Values the page masks paste as bullets, both `type=password` fields and anything using `-webkit-text-security`. Nothing the page does not render is read: content under `display:none`, `opacity:0` or `content-visibility:hidden` (a closed `<details>`, `hidden=until-found`), text under `visibility:hidden`, `type=hidden` fields, and text or control values moved off the page or clipped out of sight by an `overflow` container inside the selection.
 
 ### Known limitations
 
@@ -73,7 +73,6 @@ Limits of the capture model:
 - A percentage `border-radius` is read as pixels, and `overflow:auto` or `scroll` containers do not clip.
 - Colors outside `rgb`, `oklch`, `oklab` and `lab` are dropped, and transparent text becomes black.
 - `background-repeat`, `background-size` lengths, dashed strokes and `<pre>` whitespace are not preserved.
-- Some content the page does not show is still captured, unless it is masked: a text input moved off-screen or clipped with CSS, and collapsed content such as a closed `<details>`, `content-visibility:hidden` or `hidden=until-found`. A control under `opacity:0` keeps its value in `*.capture.json` only.
 - Clicking the toolbar icon during the success message can leave iframes in selection mode. Press `Esc` to stop them.
 
 When a resource cannot be read, or the clipboard is misused:

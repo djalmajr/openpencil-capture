@@ -50,7 +50,7 @@ export async function createClipboardFromTree(root, options = {}) {
 }
 
 export async function captureElementForOpenPencil(element, options = {}) {
-  const capture = captureElement(element, options);
+  const capture = await captureElement(element, options);
   const converted = convertCaptureToTree(capture);
   return {capture, converted, ...await createClipboardFromTree(converted.root, options)};
 }

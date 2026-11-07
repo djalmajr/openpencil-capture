@@ -11,7 +11,7 @@ function positiveInteger(value, label) {
   return parsed;
 }
 
-async function captureBundle() {
+export async function captureBundle() {
   const source = await readFile(resolve(moduleDir, "capture-element.mjs"), "utf8");
   if (/^\s*import\s/m.test(source)) throw new Error("capture-element.mjs must remain self-contained for browser injection");
   return `${source.replace(/\bexport\s+/g, "")}\n;globalThis.OpenPencilCapture={captureElement};\n`;

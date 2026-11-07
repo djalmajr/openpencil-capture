@@ -16,6 +16,8 @@
     "smoke:paste": "bun scripts/smoke-paste.mjs",
     "test": "bun test",
     "verify": "bun test && bun scripts/build-extension.mjs",
+    "package:ext": "bun scripts/package-extension.mjs",
+    "store:assets": "bun scripts/build-extension.mjs && bun scripts/store-assets.mjs",
     "smoke:webkit": "swiftc -O scripts/smoke-webkit-paste.swift -o artifacts/smoke-webkit-paste && artifacts/smoke-webkit-paste artifacts/smoke-paste/envelope.txt https://app.openpencil.dev/ artifacts/smoke-paste/webkit.png",
     "render:mark": "bun scripts/render-mark.mjs"
   },

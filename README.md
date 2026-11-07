@@ -6,12 +6,18 @@ The project contains a browser-side capture library, a Chrome Manifest V3 extens
 
 ## Install
 
+Download `openpencil-capture-X.Y.Z.zip` from the [latest release](https://github.com/djalmajr/openpencil-capture/releases), extract it, open `chrome://extensions`, turn on developer mode and choose the extracted folder with **Load unpacked**.
+
+From source:
+
 ```sh
 bun install
 bun run build
 ```
 
-Open `chrome://extensions`, enable developer mode and load `dist/extension` as an unpacked extension. After rebuilding, reload it there before testing.
+Then load `dist/extension` the same way. After rebuilding, reload it there before testing.
+
+Releases, the Chrome Web Store package and listing: [docs/extension-release.md](docs/extension-release.md), [docs/chrome-web-store.md](docs/chrome-web-store.md), [PRIVACY.md](PRIVACY.md).
 
 ## Extension interaction
 

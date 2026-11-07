@@ -83,3 +83,30 @@ describe("colors as the browser paints them", () => {
     expect(misses).toEqual([]);
   });
 });
+
+describe("backgrounds", () => {
+  test("paints text clipped to its background with that background", async () => {
+    const capture = await captureHtml(`<h1 id="root" style="margin:0;font:700 32px Arial;background:linear-gradient(90deg, rgb(255, 0, 0), rgb(0, 0, 255));-webkit-background-clip:text;background-clip:text;color:transparent">Gradient</h1>`);
+    const {root} = convertCaptureToTree(capture);
+    expect(root.fill).toBeUndefined();
+    expect(root.children[0].fill).toEqual([{type:"gradient", gradientType:"linear", rotation:270, colors:[{color:"#FF0000", position:0}, {color:"#0000FF", position:1}]}]);
+  });
+
+  // Regression: transparent text was painted black.
+  test("leaves transparent text unpainted", async () => {
+    const capture = await captureHtml(`<p id="root" style="margin:0;color:transparent">Hidden ink</p>`);
+    expect(convertCaptureToTree(capture).root.children[0].fill).toBe("#00000000");
+  });
+
+  // Mutation captured: keeping a partial layer as a frame fill would paint it under the layers
+  // below it, and over the whole box.
+  test("keeps every layer above a partial one in its own rectangle, in order", async () => {
+    const capture = await captureHtml(`<div id="root" style="width:100px;height:60px;background:linear-gradient(rgba(0, 0, 0, 0.5), transparent), radial-gradient(red, blue) 10px 10px / 20px 20px no-repeat, rgb(250, 250, 250)"></div>`);
+    const {root} = convertCaptureToTree(capture);
+    expect(root.fill).toBe("#FAFAFA");
+    expect(root.children.map((child) => [child.name, child.x, child.y, child.width, child.height, child.fill.gradientType])).toEqual([
+      ["Div · Background image 1", 10, 10, 20, 20, "radial"],
+      ["Div · Background image 2", 0, 0, 100, 60, "linear"],
+    ]);
+  });
+});

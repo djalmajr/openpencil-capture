@@ -4,7 +4,8 @@ export const CAPTURE_VERSION = 1;
 export const CAPTURED_STYLE_KEYS = [
   "display", "position", "flexDirection", "alignItems", "justifyContent", "gap",
   "backgroundColor", "backgroundImage", "color",
-  "backgroundPosition", "backgroundRepeat", "backgroundSize",
+  "backgroundPosition", "backgroundPositionX", "backgroundPositionY", "backgroundRepeat", "backgroundSize", "backgroundOrigin", "backgroundClip",
+  "overflowX", "overflowY", "contentVisibility",
   "borderTopColor", "borderTopWidth", "borderTopStyle",
   "borderRightColor", "borderRightWidth", "borderRightStyle",
   "borderBottomColor", "borderBottomWidth", "borderBottomStyle",
@@ -184,6 +185,32 @@ function contentClip(computed, box, clip) {
   };
 }
 
+const IMAGE_MEASURE_TIMEOUT_MS = 3000;
+
+// Where a background image lands depends on its natural size, which only the page knows. The
+// browser has already loaded each one, so this mostly reads its cache.
+async function measureBackgroundImages(nodes) {
+  const urls = new Set();
+  for (const node of nodes) {
+    for (const match of String(node.styles.backgroundImage || "").matchAll(/url\((?:"([^"]+)"|'([^']+)'|([^)'"\s]+))\)/gi)) {
+      urls.add(match.slice(1).find(Boolean));
+    }
+  }
+  const sizes = {};
+  await Promise.all(Array.from(urls, (url) => new Promise((resolve) => {
+    const image = new Image();
+    const done = () => {
+      if (image.naturalWidth > 0 && image.naturalHeight > 0) sizes[url] = {width:image.naturalWidth, height:image.naturalHeight};
+      resolve();
+    };
+    image.onload = done;
+    image.onerror = done;
+    setTimeout(done, IMAGE_MEASURE_TIMEOUT_MS);
+    image.src = url;
+  })));
+  return sizes;
+}
+
 export async function captureElement(root, options = {}) {
   if (typeof Element === "undefined" || !(root instanceof Element)) {
     throw new TypeError("captureElement expects a DOM Element");
@@ -252,6 +279,7 @@ export async function captureElement(root, options = {}) {
     Array.from(node.children).forEach((child, index) => visit(child, `${path}.${index}`, path, childContext));
   };
   visit(root, "0", null, {inResources:false, clip:canvas});
+  const imageSizes = await measureBackgroundImages(nodes);
   return {
     format: CAPTURE_FORMAT, version: CAPTURE_VERSION,
     label: options.label
@@ -260,6 +288,6 @@ export async function captureElement(root, options = {}) {
       || root.getAttribute("data-slot")
       || root.tagName.toLowerCase(),
     source: { url: options.url || globalThis.location?.href || null, selector: options.selector || null },
-    capturedAt: options.capturedAt || new Date().toISOString(), rootPath: "0", nodes,
+    capturedAt: options.capturedAt || new Date().toISOString(), rootPath: "0", nodes, imageSizes,
   };
 }

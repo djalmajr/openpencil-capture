@@ -1,4 +1,5 @@
-import { channelToHex, colorWithCombinedOpacity, colorWithOpacity, gradientColor, safeColor } from "./css-color.mjs";
+import { cssBackgroundLayers, placeImage, resolveLength } from "./css-background.mjs";
+import { colorWithCombinedOpacity, colorWithOpacity, gradientColor, safeColor } from "./css-color.mjs";
 import { clamp, px, round, splitCssArguments } from "./css-values.mjs";
 
 export { cssColorToHex } from "./css-color.mjs";
@@ -15,10 +16,6 @@ function parseGradientStop(value) {
   return { color, position:match?.[2] == null ? null : Number(match[2]), unit:match?.[3] || null };
 }
 
-function firstCssImageUrl(value) {
-  return value?.match(/url\((?:"([^"]+)"|'([^']+)'|([^)'"\s]+))\)/i)?.slice(1).find(Boolean) || null;
-}
-
 function assetUrl(value, baseUrl) {
   if (!value) return null;
   if (value.startsWith("data:") || value.startsWith("blob:")) return value;
@@ -30,41 +27,15 @@ function assetUrl(value, baseUrl) {
   }
 }
 
+function backgroundLayers(node, capture) {
+  return cssBackgroundLayers(node.styles, node.rect.width, node.rect.height, {
+    baseUrl:capture?.source?.url, imageSizes:capture?.imageSizes, resolveUrl:assetUrl,
+  });
+}
+
+// The topmost background image or gradient as a fill.
 export function cssBackgroundToFill(node, options = {}) {
-  const value = node.styles.backgroundImage;
-  if (!value || value === "none") return null;
-  const imageUrl = assetUrl(firstCssImageUrl(value),options.baseUrl);
-  if (imageUrl) {
-    const size = node.styles.backgroundSize;
-    return { type:"image", url:imageUrl, mode:size === "contain" ? "fit" : size === "cover" ? "fill" : "stretch" };
-  }
-  const match = value.match(/^(repeating-)?linear-gradient\((.*)\)$/i);
-  if (!match) return null;
-  const args = splitCssArguments(match[2]);
-  let cssAngle = 180;
-  if (/^-?[\d.]+deg$/i.test(args[0])) cssAngle = Number.parseFloat(args.shift());
-  const stops = args.map(parseGradientStop).filter(Boolean);
-  if (stops.length < 2) return null;
-  const length = Math.max(1, Math.hypot(node.rect.width, node.rect.height));
-  const period = match[1] ? Math.max(...stops.map((stop) => stop.unit === "px" ? stop.position : 0)) : null;
-  let colors;
-  if (period > 0) {
-    colors = [];
-    const cycles = Math.ceil(length / period);
-    for (let cycle = 0; cycle < cycles; cycle += 1) {
-      for (const stop of stops) {
-        const offset = stop.unit === "%" ? stop.position / 100 * period : stop.position ?? 0;
-        colors.push({ color:stop.color, position:clamp((cycle * period + offset) / length) });
-      }
-    }
-    colors.push({ color:stops[stops.length - 1].color, position:1 });
-  } else {
-    colors = stops.map((stop, index) => ({
-      color:stop.color,
-      position:stop.position == null ? index / (stops.length - 1) : stop.unit === "%" ? stop.position / 100 : stop.position / length,
-    }));
-  }
-  return { type:"gradient", gradientType:"linear", rotation:((360 - cssAngle) % 360 + 360) % 360, colors };
+  return backgroundLayers(node, {source:{url:options.baseUrl}, imageSizes:options.imageSizes}).at(-1)?.fill ?? null;
 }
 
 function repeatingLinearPattern(node) {
@@ -244,7 +215,17 @@ function borderProperties(styles) {
   };
 }
 
-function makeText(node, parent, name = `${semanticLayerName(node)} · Text`, run = null) {
+const isTransparentColor = (value) => value === "transparent" || /^rgba\(.*,\s*0\)$/.test(String(value)) || /\/\s*0%?\s*\)$/.test(String(value));
+
+// Transparent text shows what is behind it: nothing, or the background it clips with
+// `background-clip:text`.
+function textFill(node, clippedBackground) {
+  const color = node.namespace === "http://www.w3.org/2000/svg" ? node.styles.fill : node.styles.color;
+  if (isTransparentColor(color)) return clippedBackground?.length ? clippedBackground : "#00000000";
+  return safeColor(color) || "#000000";
+}
+
+function makeText(node, parent, name = `${semanticLayerName(node)} · Text`, run = null, clippedBackground = null) {
   const fontSize = px(node.styles.fontSize, 14);
   const sourceRect = run?.rect || node.textRect || node.rect;
   const content = run?.text || node.text;
@@ -261,7 +242,7 @@ function makeText(node, parent, name = `${semanticLayerName(node)} · Text`, run
     x:round(sourceRect.x - parent.rect.x - (intrinsicSingleLine ? 0 : xCushion)), y:round(sourceRect.y - parent.rect.y),
     ...(intrinsicSingleLine ? {textGrowth:"auto"} : {width:round(sourceRect.width + widthCushion),height:round(sourceRect.height),textGrowth:"fixed-width-height"}),
     content:transformedText(node, content),
-    fill:safeColor(node.namespace === "http://www.w3.org/2000/svg" ? node.styles.fill : node.styles.color) || "#000000",
+    fill:textFill(node, clippedBackground),
     fontFamily:fontFamily(node.styles.fontFamily), fontSize:round(fontSize), fontWeight:String(node.styles.fontWeight || "400"),
     fontStyle:node.styles.fontStyle || "normal", lineHeight:round(lineHeight / fontSize),
     ...(px(node.styles.letterSpacing) ? {letterSpacing:round(px(node.styles.letterSpacing))} : {}),
@@ -310,8 +291,35 @@ function controlText(node, parent) {
   };
 }
 
-function imageMode(node) {
-  return node.styles.objectFit === "contain" ? "fit" : node.styles.objectFit === "cover" ? "fill" : "stretch";
+function objectSize(fit, area, natural) {
+  if (fit === "fill") return {width:area.width, height:area.height};
+  const contain = Math.min(area.width / natural.width, area.height / natural.height);
+  const scale = {contain, cover:Math.max(area.width / natural.width, area.height / natural.height), none:1, "scale-down":Math.min(1, contain)}[fit] ?? 1;
+  return {width:natural.width * scale, height:natural.height * scale};
+}
+
+// Where an <img>'s pixels land in its box, as `object-fit` and `object-position` place them:
+// the region they cover and the fill that paints it.
+function imagePlacement(node, url) {
+  const box = {x:0, y:0, width:node.rect.width, height:node.rect.height};
+  const natural = {width:node.attributes.naturalWidth, height:node.attributes.naturalHeight};
+  const fit = node.styles.objectFit || "fill";
+  if (!(natural.width > 0 && natural.height > 0) || fit === "fill") {
+    return {region:box, fill:{type:"image", url, mode:fit === "contain" ? "fit" : fit === "cover" ? "fill" : "stretch"}};
+  }
+  const [positionX = "50%", positionY = "50%"] = String(node.styles.objectPosition || "50% 50%").split(/\s+(?![^(]*\))/);
+  const placed = placeImage({
+    area:box, clip:box, size:objectSize(fit, box, natural), repeat:["no-repeat", "no-repeat"],
+    position:{x:(range) => resolveLength(positionX, range) ?? range / 2, y:(range) => resolveLength(positionY, range) ?? range / 2},
+  });
+  if (!placed) return null;
+  const exact = Math.abs(placed.image.x) <= 0.5 && Math.abs(placed.image.y) <= 0.5
+    && Math.abs(placed.image.width - placed.region.width) <= 0.5 && Math.abs(placed.image.height - placed.region.height) <= 0.5;
+  const centered = positionX === "50%" && positionY === "50%";
+  const fill = exact ? {type:"image", url, mode:"stretch"}
+    : fit === "cover" && centered ? {type:"image", url, mode:"fill"}
+      : {type:"image", url, mode:"crop", imageRect:{x:round(placed.image.x), y:round(placed.image.y), width:round(placed.image.width), height:round(placed.image.height)}};
+  return {region:{x:round(placed.region.x), y:round(placed.region.y), width:round(placed.region.width), height:round(placed.region.height)}, fill};
 }
 
 function cssBlendMode(value) {
@@ -321,7 +329,7 @@ function cssBlendMode(value) {
     ["soft-light","softLight"],["hard-light","hardLight"],["difference","difference"],["exclusion","exclusion"],
     ["hue","hue"],["saturation","saturation"],["color","color"],["luminosity","luminosity"],
   ]);
-  return modes.get(value) || null;
+  return value === "normal" ? null : modes.get(value) || null;
 }
 
 function filterAmount(filter, name) {
@@ -333,19 +341,29 @@ function filterAmount(filter, name) {
 
 function filteredImageNode(node, parent, url) {
   const rect = relativeRect(node,parent);
+  const placement = imagePlacement(node, url);
   const filter = node.attributes.effectiveFilter && node.attributes.effectiveFilter !== "none"
     ? node.attributes.effectiveFilter
     : node.styles.filter;
   const grayscale = filterAmount(filter,"grayscale");
   const brightness = filterAmount(filter,"brightness");
   const darkened = Number.isFinite(brightness) && brightness >= 0 && brightness < 1;
-  if (!(grayscale > 0) && !darkened) {
-    return {type:"rectangle",name:semanticLayerName(node),layoutPosition:"absolute",...rect,fill:{type:"image",url,mode:imageMode(node)},cornerRadius:cornerRadius(node.styles),...(filter && filter !== "none" ? {metadata:{type:"openpencil-capture-image",filter}} : {})};
+  const backgroundColor = safeColor(node.styles.backgroundColor);
+  const radius = cornerRadius(node.styles);
+  const coversBox = placement && placement.region.x === 0 && placement.region.y === 0 && placement.region.width === rect.width && placement.region.height === rect.height;
+  const metadata = filter && filter !== "none" ? {metadata:{type:"openpencil-capture-image",filter}} : {};
+  if (!(grayscale > 0) && !darkened && !backgroundColor && (coversBox || !radius)) {
+    if (!placement) return null;
+    return {type:"rectangle",name:semanticLayerName(node),layoutPosition:"absolute",
+      x:round(rect.x + placement.region.x),y:round(rect.y + placement.region.y),width:placement.region.width,height:placement.region.height,
+      fill:placement.fill,...(coversBox ? {cornerRadius:radius} : {}),...metadata};
   }
-  const children = [{type:"rectangle",name:`${semanticLayerName(node)} · Source`,layoutPosition:"absolute",x:0,y:0,width:rect.width,height:rect.height,fill:{type:"image",url,mode:imageMode(node)}}];
-  if (grayscale > 0) children.push({type:"rectangle",name:`${semanticLayerName(node)} · Grayscale`,layoutPosition:"absolute",x:0,y:0,width:rect.width,height:rect.height,fill:{type:"color",color:`#808080${Math.round(Math.min(1,grayscale)*255).toString(16).padStart(2,"0").toUpperCase()}`,blendMode:"saturation"}});
-  if (darkened) children.push({type:"rectangle",name:`${semanticLayerName(node)} · Brightness`,layoutPosition:"absolute",x:0,y:0,width:rect.width,height:rect.height,fill:`#000000${Math.round((1-brightness)*255).toString(16).padStart(2,"0").toUpperCase()}`});
-  return {type:"frame",name:semanticLayerName(node),layout:"none",layoutPosition:"absolute",...rect,clip:true,cornerRadius:cornerRadius(node.styles),metadata:{type:"openpencil-capture-image-filter",filter},children};
+  const full = {layoutPosition:"absolute",x:0,y:0,width:rect.width,height:rect.height};
+  const children = placement ? [{type:"rectangle",name:`${semanticLayerName(node)} · Source`,layoutPosition:"absolute",...placement.region,fill:placement.fill}] : [];
+  if (grayscale > 0) children.push({type:"rectangle",name:`${semanticLayerName(node)} · Grayscale`,...full,fill:{type:"color",color:`#808080${Math.round(Math.min(1,grayscale)*255).toString(16).padStart(2,"0").toUpperCase()}`,blendMode:"saturation"}});
+  if (darkened) children.push({type:"rectangle",name:`${semanticLayerName(node)} · Brightness`,...full,fill:`#000000${Math.round((1-brightness)*255).toString(16).padStart(2,"0").toUpperCase()}`});
+  return {type:"frame",name:semanticLayerName(node),layout:"none",layoutPosition:"absolute",...rect,clip:true,cornerRadius:radius,
+    ...(backgroundColor ? {fill:backgroundColor} : {}),metadata:{type:filter && filter !== "none" ? "openpencil-capture-image-filter" : "openpencil-capture-image",filter},children};
 }
 
 function svgGraphic(node, parent, byPath, paintServers) {
@@ -434,7 +452,7 @@ export function convertCaptureToTree(capture) {
     paintServers.set(node.attributes.id,{type:"gradient",gradientType:"linear",rotation:round(rotation),colors:stops});
   }
   const stats = { frames:0, groups:0, texts:0, images:0, gradients:0, svgGraphics:0, controls:0, skipped:0, skippedSvgInvisible:0, skippedSvgUnsupported:0, skippedRoots:{} };
-  const convertNode = (node, parent) => {
+  const convertNode = (node, parent, clippedBackground = null) => {
     if (node.namespace === "http://www.w3.org/2000/svg" && ["defs", "clippath", "title", "desc"].includes(node.tag)) {
       stats.skipped += 1;
       stats.skippedSvgInvisible += 1;
@@ -453,7 +471,7 @@ export function convertCaptureToTree(capture) {
         const bridge = {type:"group",name:semanticLayerName(node),layoutPosition:"absolute",x:0,y:0,children:[]};
         stats.groups += 1;
         for (const path of descendants) {
-          const child = convertNode(byPath.get(path), parent);
+          const child = convertNode(byPath.get(path), parent, clippedBackground);
           if (child) bridge.children.push(child);
         }
         if (bridge.children.length) return bridge;
@@ -487,10 +505,20 @@ export function convertCaptureToTree(capture) {
       if (node.tag === "img") return filteredImageNode(node,parent,url);
       return {type:"rectangle",name:semanticLayerName(node),layoutPosition:"absolute",...relativeRect(node,parent),fill:{type:"image",url,mode:"stretch"},cornerRadius:cornerRadius(node.styles)};
     }
-    const repeatingPattern = repeatingLinearPattern(node);
-    const backgroundFill = repeatingPattern ? null : cssBackgroundToFill(node,{baseUrl:capture.source?.url});
     const backgroundColor = safeColor(node.styles.backgroundColor);
     const blendMode = cssBlendMode(node.styles.mixBlendMode);
+    const layers = backgroundLayers(node, capture);
+    // A single striped gradient stays editable as stripes rather than a many-stop gradient.
+    const repeatingPattern = layers.length === 1 && !layers[0].region ? repeatingLinearPattern(node) : null;
+    const withBlend = (fill) => blendMode ? (typeof fill === "string" ? {type:"color",color:fill,blendMode} : {...fill,blendMode}) : fill;
+    // The editor paints a frame's fills under its children, so once one layer needs a rectangle
+    // of its own, every layer above it does too.
+    const firstPartial = layers.findIndex((layer) => layer.region);
+    const fillLayers = repeatingPattern ? [] : firstPartial === -1 ? layers : layers.slice(0, firstPartial);
+    const childLayers = repeatingPattern || firstPartial === -1 ? [] : layers.slice(firstPartial);
+    const clipsText = String(node.styles.backgroundClip).split(",").some((value) => value.trim() === "text");
+    const fills = [...(backgroundColor ? [backgroundColor] : []), ...fillLayers.map((layer) => layer.fill)].map(withBlend);
+    const textBackground = clipsText ? fills : clippedBackground;
     const shadows = parseCssShadows(node.styles.boxShadow);
     const border = Object.keys(borderProperties(node.styles)).length ? borderProperties(node.styles) : shadowRingBorder(shadows);
     const effects = shadows.filter((shadow) => !(border.stroke === shadow.color && border.strokeWidth === shadow.spread && shadow.offset.x === 0 && shadow.offset.y === 0 && shadow.blur === 0));
@@ -506,11 +534,11 @@ export function convertCaptureToTree(capture) {
     }
     const clipped = ["hidden", "clip"].includes(node.styles.overflow);
     const isHtmlElement = node.namespace !== "http://www.w3.org/2000/svg";
-    const framed = node.path === capture.rootPath || isHtmlElement || Boolean(repeatingPattern || backgroundFill || backgroundColor || border.stroke || effects.length || clipped);
+    const framed = node.path === capture.rootPath || isHtmlElement || Boolean(repeatingPattern || layers.length || backgroundColor || border.stroke || effects.length || clipped);
     const frame = framed ? {
       type:"frame", name:semanticLayerName(node), layout:"none", layoutPosition:"absolute",
       ...frameRect, cornerRadius:cornerRadius(node.styles),
-      ...(backgroundColor ? {fill:blendMode ? {type:"color",color:backgroundColor,blendMode} : backgroundColor} : backgroundFill ? {fill:blendMode ? {...backgroundFill,blendMode} : backgroundFill} : {}),
+      ...(!clipsText && fills.length ? {fill:fills.length === 1 ? fills[0] : fills} : {}),
       ...border, ...(effects.length ? { effect:effects.length === 1 ? effects[0] : effects } : {}), ...(clipped ? { clip:true } : {}),
       ...(px(node.styles.opacity, 1) < 1 ? { opacity:round(px(node.styles.opacity, 1)) } : {}), children:[],
     } : {
@@ -518,29 +546,31 @@ export function convertCaptureToTree(capture) {
       ...(px(node.styles.opacity, 1) < 1 ? { opacity:round(px(node.styles.opacity, 1)) } : {}), children:[],
     };
     if (framed) stats.frames += 1; else stats.groups += 1;
-    if (backgroundFill && backgroundColor) {
-      frame.children.push({
-        type:"rectangle",name:`${semanticLayerName(node)} · Background image`,layoutPosition:"absolute",
-        x:0,y:0,width:frameRect.width,height:frameRect.height,cornerRadius:cornerRadius(node.styles),
-        fill:blendMode ? {...backgroundFill,blendMode} : backgroundFill,
-      });
+    if (!clipsText) {
+      childLayers.forEach((layer, index) => frame.children.push({
+        type:"rectangle",name:`${semanticLayerName(node)} · Background image${childLayers.length > 1 ? ` ${index + 1}` : ""}`,layoutPosition:"absolute",
+        ...(layer.region || {x:0,y:0,width:frameRect.width,height:frameRect.height}),
+        ...(layer.region ? {} : {cornerRadius:cornerRadius(node.styles)}),fill:withBlend(layer.fill),
+      }));
+      if (repeatingPattern) frame.children.push(repeatingPattern);
     }
-    if (repeatingPattern) frame.children.push(repeatingPattern);
-    if (backgroundFill?.type === "image") stats.images += 1;
-    if (backgroundFill?.type === "gradient" || repeatingPattern) stats.gradients += 1;
+    for (const layer of layers) {
+      if (layer.fill.type === "image" && !layer.fill.gradient) stats.images += 1;
+      else stats.gradients += 1;
+    }
     const textRuns = Array.isArray(node.textRuns)
       ? node.textRuns.filter((run) => run?.text && run.rect?.width > 0 && run.rect?.height > 0)
       : [];
     if (textRuns.length) {
       textRuns.forEach((run, index) => {
         const suffix = textRuns.length > 1 ? ` · Line ${index + 1}` : "";
-        frame.children.push(makeText(node,node,`${semanticLayerName(node)} · Text${suffix}`,run));
+        frame.children.push(makeText(node,node,`${semanticLayerName(node)} · Text${suffix}`,run,textBackground));
         const underline = makeTextUnderline(node,node,`${semanticLayerName(node)} · Underline${suffix}`,run);
         if (underline) { frame.children.push(underline); stats.frames += 1; }
       });
       stats.texts += textRuns.length;
     } else if (node.text && (!node.textRect || (node.textRect.width > 0 && node.textRect.height > 0))) {
-      frame.children.push(makeText(node, node));
+      frame.children.push(makeText(node, node, undefined, null, textBackground));
       const underline = makeTextUnderline(node,node);
       if (underline) { frame.children.push(underline); stats.frames += 1; }
       stats.texts += 1;
@@ -548,7 +578,7 @@ export function convertCaptureToTree(capture) {
     const control = controlText(node, node);
     if (control) { frame.children.push(control); stats.controls += 1; }
     for (const path of childPaths.get(node.path) || []) {
-      const child = convertNode(byPath.get(path), node);
+      const child = convertNode(byPath.get(path), node, textBackground);
       if (child) frame.children.push(child);
     }
     return frame;

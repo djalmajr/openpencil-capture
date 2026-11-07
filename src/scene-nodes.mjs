@@ -1,4 +1,4 @@
-import { linearGradientTransform } from "@open-pencil/scene-graph/gradient";
+import { ellipticalGradientTransform, linearGradientTransform } from "@open-pencil/scene-graph/gradient";
 import { parseSVGPath } from "@open-pencil/scene-graph/parse-path";
 
 const BLEND_MODES = {
@@ -7,7 +7,7 @@ const BLEND_MODES = {
   softLight:"SOFT_LIGHT", hardLight:"HARD_LIGHT", difference:"DIFFERENCE", exclusion:"EXCLUSION",
   hue:"HUE", saturation:"SATURATION", color:"COLOR", luminosity:"LUMINOSITY",
 };
-const IMAGE_SCALE_MODES = {fit:"FIT", fill:"FILL", stretch:"CROP"};
+const IMAGE_SCALE_MODES = {fit:"FIT", fill:"FILL", stretch:"CROP", crop:"CROP", tile:"TILE"};
 const STROKE_CAPS = {round:"ROUND", square:"SQUARE", butt:"NONE"};
 const STROKE_JOINS = {round:"ROUND", bevel:"BEVEL", miter:"MITER"};
 const IDENTITY_TRANSFORM = {m00:1, m01:0, m02:0, m10:0, m11:1, m12:0};
@@ -40,7 +40,34 @@ function gradientStops(colors) {
   });
 }
 
+// Radial and angular gradients are centred on (0.5, 0.5) of gradient space with radius 0.5; the
+// two radii given here, in the layer's unit square, map it onto the box.
+function ellipticalPaint(fill, width, height) {
+  const center = fill.center || {x:0.5, y:0.5};
+  if (fill.gradientType === "radial") {
+    return {
+      type:"GRADIENT_RADIAL", color:TRANSPARENT, opacity:1, visible:true, gradientStops:gradientStops(fill.colors),
+      gradientTransform:ellipticalGradientTransform(center, {x:center.x + fill.radius.x, y:center.y}, {x:center.x, y:center.y + fill.radius.y}),
+    };
+  }
+  // An angular gradient starts along gradient space's +x and turns clockwise; CSS's conic one
+  // starts straight up, so +x points `rotation` degrees clockwise from up, with equal radii on screen.
+  const angle = fill.rotation * Math.PI / 180;
+  const radius = Math.max(width, height, 1) / 2;
+  const safeWidth = Math.max(width, 1);
+  const safeHeight = Math.max(height, 1);
+  return {
+    type:"GRADIENT_ANGULAR", color:TRANSPARENT, opacity:1, visible:true, gradientStops:gradientStops(fill.colors),
+    gradientTransform:ellipticalGradientTransform(
+      center,
+      {x:center.x + radius * Math.sin(angle) / safeWidth, y:center.y - radius * Math.cos(angle) / safeHeight},
+      {x:center.x + radius * Math.cos(angle) / safeWidth, y:center.y + radius * Math.sin(angle) / safeHeight},
+    ),
+  };
+}
+
 function gradientPaint(fill, width, height) {
+  if (fill.gradientType === "radial" || fill.gradientType === "angular") return ellipticalPaint(fill, width, height);
   const angle = (360 - fill.rotation) * Math.PI / 180;
   const direction = {x:Math.sin(angle), y:-Math.cos(angle)};
   const length = Math.abs(width * direction.x) + Math.abs(height * direction.y);
@@ -57,22 +84,34 @@ function gradientPaint(fill, width, height) {
   };
 }
 
-function imagePaint(fill, imageHash) {
-  const imageScaleMode = IMAGE_SCALE_MODES[fill.mode] || "FILL";
+// `imageRect` is where the image (one tile of it, when tiled) lands in the layer, in pixels. The
+// editor's `imageTransform` maps the layer's unit square onto the image's.
+function imageTransform(rect, width, height) {
+  if (!rect) return IDENTITY_TRANSFORM;
   return {
-    type:"IMAGE", color:TRANSPARENT, opacity:1, visible:true, imageHash, imageScaleMode,
-    ...(imageScaleMode === "CROP" ? {imageTransform:IDENTITY_TRANSFORM} : {}),
+    m00:round(Math.max(width, 1) / rect.width), m01:0, m02:round(-rect.x / rect.width),
+    m10:0, m11:round(Math.max(height, 1) / rect.height), m12:round(-rect.y / rect.height),
   };
 }
 
+function imagePaint(fill, imageHash, width, height) {
+  const imageScaleMode = IMAGE_SCALE_MODES[fill.mode] || "FILL";
+  return {
+    type:"IMAGE", color:TRANSPARENT, opacity:1, visible:true, imageHash, imageScaleMode,
+    ...(imageScaleMode === "CROP" || (imageScaleMode === "TILE" && fill.imageRect) ? {imageTransform:imageTransform(fill.imageRect, width, height)} : {}),
+  };
+}
+
+// A list of fills paints bottom first, as the editor draws them.
 function toFills(fill, width, height, imageHashes) {
   if (!fill) return [];
+  if (Array.isArray(fill)) return fill.flatMap((layer) => toFills(layer, width, height, imageHashes));
   const paint = () => {
     if (typeof fill === "string") return solidPaint(fill);
     if (fill.type === "color") return solidPaint(fill.color);
     if (fill.type === "gradient") return gradientPaint(fill, width, height);
     const hash = imageHashes.get(fill.url);
-    return hash ? imagePaint(fill, hash) : null;
+    return hash ? imagePaint(fill, hash, width, height) : null;
   };
   const result = paint();
   if (!result || (result.type === "SOLID" && result.opacity === 0)) return [];
@@ -252,7 +291,7 @@ export function toSceneNodes(root, imageHashes = new Map()) {
       return children.length ? fitGroup({...common, type:"GROUP", children}) : null;
     }
     if (node.type === "text") {
-      return {...common, type:"TEXT", ...textProperties(node), fills:toFills(node.fill, 0, 0, imageHashes)};
+      return {...common, type:"TEXT", ...textProperties(node), fills:toFills(node.fill, node.measured?.width ?? 0, node.measured?.height ?? 0, imageHashes)};
     }
     if (node.type === "path") {
       const hasFill = toFills(node.fill, 1, 1, imageHashes).length > 0;
@@ -265,7 +304,8 @@ export function toSceneNodes(root, imageHashes = new Map()) {
       };
     }
     const fills = toFills(node.fill, node.width, node.height, imageHashes);
-    const missingImage = node.fill?.type === "image" && fills.length === 0;
+    const imageFills = [node.fill].flat().filter((fill) => fill?.type === "image");
+    const missingImage = imageFills.some((fill) => !imageHashes.get(fill.url));
     const painted = {
       ...common,
       ...(missingImage ? {name:`${node.name} · Image unavailable`} : {}),
@@ -286,11 +326,13 @@ export function toSceneNodes(root, imageHashes = new Map()) {
 export function collectImageRequests(root) {
   const requests = new Map();
   const visit = (node) => {
-    if (node.fill?.type === "image") {
-      const previous = requests.get(node.fill.url);
-      requests.set(node.fill.url, {
-        width:Math.max(previous?.width ?? 0, node.width ?? 0),
-        height:Math.max(previous?.height ?? 0, node.height ?? 0),
+    for (const fill of [node.fill].flat()) {
+      if (fill?.type !== "image") continue;
+      const previous = requests.get(fill.url);
+      const shown = fill.imageRect || node;
+      requests.set(fill.url, {
+        width:Math.max(previous?.width ?? 0, shown.width ?? 0),
+        height:Math.max(previous?.height ?? 0, shown.height ?? 0),
       });
     }
     for (const child of node.children || []) visit(child);

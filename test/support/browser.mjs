@@ -11,13 +11,15 @@ export function useBrowser() {
     state.script = await captureBundle();
   });
   afterAll(() => state.browser?.close());
-  const captureHtml = async function captureHtml(html, selector = "#root", {viewport = {width:800, height:600}, before} = {}) {
+  const captureHtml = async function captureHtml(html, selector = "#root", {viewport = {width:800, height:600}, before, screenshot = false} = {}) {
     const page = await state.browser.newPage({viewport, deviceScaleFactor:1});
     try {
       await page.setContent(`<!doctype html><html><body style="margin:0">${html}</body></html>`, {waitUntil:"load"});
       if (before) await page.evaluate(before);
       await page.addScriptTag({content:state.script});
-      return await page.evaluate((selector) => globalThis.OpenPencilCapture.captureElement(document.querySelector(selector), {url:"https://example.test/page", capturedAt:"2026-11-07T00:00:00.000Z"}), selector);
+      const png = screenshot ? await page.locator(selector).screenshot({animations:"disabled"}) : null;
+      const capture = await page.evaluate((selector) => globalThis.OpenPencilCapture.captureElement(document.querySelector(selector), {url:"https://example.test/page", capturedAt:"2026-11-07T00:00:00.000Z"}), selector);
+      return screenshot ? {capture, png} : capture;
     } finally {
       await page.close();
     }

@@ -41,10 +41,14 @@ During serialization the toolbar collapses to `Capturing selection…` or `Captu
 | Text | `TEXT`, one layer per visual line, with visible truncation kept as `...` |
 | `path`, `line`, `polyline`, `polygon`, partial circle | `VECTOR` with an editable vector network |
 | `rect`, `circle`, `ellipse` | `RECTANGLE`, `ELLIPSE` |
-| Color, including `oklch`, `oklab`, `lab` | Solid fill |
-| CSS and SVG linear gradient | Native linear gradient; transparent gradients layer over the background color |
+| Color, including `oklch`, `oklab`, `lab`, `lch` and `color()` spaces | Solid fill |
+| CSS linear, radial and conic gradient, SVG linear gradient | Native linear, radial or angular gradient |
+| Layered `background` | One fill per layer over the background color; a layer that paints only part of the box, and every layer above it, becomes a rectangle of its own |
+| `background-size`, `background-position`, `background-repeat` | Image placed, cropped or tiled where the page shows it |
+| Gradient tiled by `background-size` (dot grids, checkerboards) | Repeating image of one tile, drawn at twice its size |
 | `repeating-linear-gradient` with sharp stops | Clipped vector stripes |
-| `<img>`, CSS `url()` background, `<canvas>` | Image fill with the bytes embedded |
+| `background-clip:text` | The background as the text's fill |
+| `<img>`, CSS `url()` background, `<canvas>` | Image fill with the bytes embedded, placed by `object-fit` and `object-position` |
 | SVG, AVIF and other images CanvasKit cannot decode | Image fill rasterized at twice the displayed size |
 | `grayscale()`, `brightness()` | Editable overlay layers above the image |
 | `mix-blend-mode` | Fill blend mode |
@@ -64,15 +68,13 @@ Limits of the capture model:
 
 - Layout is absolute; Auto Layout is not inferred.
 - Pseudo-elements, masks and `transform` on SVG elements are not captured.
-- `object-position` and a background color on the `<img>` itself are ignored.
 - Filters other than `grayscale()` and `brightness()` are dropped. So are link targets; the underline stays.
 - A diagonal SVG `<line>` is always drawn from top-left to bottom-right.
 - Text uses the first family in `font-family`, even if the browser fell back to a later one, so its metrics can differ.
 - Open shadow roots, SVG `<use>` sprites and iframe content in a whole-page capture come out empty.
-- Radial and conic gradients are dropped, and `to <side>` linear gradients render top to bottom. In a layered background, only the first image or gradient survives.
+- Gradients blend in sRGB whatever `in <space>` says, and color hints are ignored. `background-repeat:space` repeats without spacing.
 - A percentage `border-radius` is read as pixels, and `overflow:auto` or `scroll` containers do not clip.
-- Transparent text becomes black.
-- `background-repeat`, `background-size` lengths, dashed strokes and `<pre>` whitespace are not preserved.
+- Dashed strokes and `<pre>` whitespace are not preserved.
 
 When a resource cannot be read, or the clipboard is misused:
 

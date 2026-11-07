@@ -263,6 +263,7 @@ function textProperties(node) {
     textAlignHorizontal:{center:"CENTER", right:"RIGHT"}[node.textAlign] || "LEFT",
     textAlignVertical:node.textAlignVertical === "middle" ? "CENTER" : "TOP",
     textAutoResize:node.textGrowth === "auto" ? "WIDTH_AND_HEIGHT" : "NONE",
+    ...(node.href ? {styleRuns:[{start:0, length:node.content.length, style:{hyperlink:{type:"URL", value:node.href}}}]} : {}),
   };
 }
 

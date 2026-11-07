@@ -105,8 +105,9 @@ function transformedText(node, value = node.text) {
 
 const GENERIC_FONT_FAMILIES = new Set(["serif","sans-serif","monospace","cursive","fantasy","system-ui","ui-serif","ui-sans-serif","ui-monospace","ui-rounded","-apple-system","BlinkMacSystemFont"]);
 
-function fontFamily(value) {
-  const family = value?.split(",")[0]?.trim().replace(/^['"]|['"]$/g, "") || "Noto Sans";
+// The family the page drew with, when the capture measured it; older captures name only the list.
+function fontFamily(value, resolved) {
+  const family = resolved || value?.split(",")[0]?.trim().replace(/^['"]|['"]$/g, "") || "Noto Sans";
   return family === "Geist Variable" || GENERIC_FONT_FAMILIES.has(family) ? "Inter" : family;
 }
 
@@ -238,7 +239,8 @@ function textFill(node, clippedBackground) {
   return safeColor(color) || "#000000";
 }
 
-function makeText(node, parent, name = `${semanticLayerName(node)} · Text`, run = null, clippedBackground = null) {
+function makeText(node, parent, name = `${semanticLayerName(node)} · Text`, run = null, clippedBackground = null, baseUrl = null) {
+  const link = linkTarget(node.attributes.href, baseUrl);
   const fontSize = px(node.styles.fontSize, 14);
   const sourceRect = run?.rect || node.textRect || node.rect;
   const content = run?.text || node.text;
@@ -256,14 +258,25 @@ function makeText(node, parent, name = `${semanticLayerName(node)} · Text`, run
     ...(intrinsicSingleLine ? {textGrowth:"auto"} : {width:round(sourceRect.width + widthCushion),height:round(sourceRect.height),textGrowth:"fixed-width-height"}),
     content:transformedText(node, content),
     fill:textFill(node, clippedBackground),
-    fontFamily:fontFamily(node.styles.fontFamily), fontSize:round(fontSize), fontWeight:String(node.styles.fontWeight || "400"),
+    fontFamily:fontFamily(node.styles.fontFamily, node.fontFamily), fontSize:round(fontSize), fontWeight:String(node.styles.fontWeight || "400"),
     fontStyle:node.styles.fontStyle || "normal", lineHeight:round(lineHeight / fontSize),
     ...(px(node.styles.letterSpacing) ? {letterSpacing:round(px(node.styles.letterSpacing))} : {}),
     measured:{width:round(sourceRect.width),height:round(sourceRect.height),lineHeight:round(lineHeight)},
     textAlign:align, textAlignVertical:node.tag === "button" ? "middle" : "top",
     ...(String(node.styles.textDecorationLine || "").includes("underline") ? {underline:true} : {}),
-    ...(node.attributes.href ? {href:node.attributes.href,metadata:{type:"openpencil-capture-link",href:node.attributes.href}} : {}),
+    ...(link ? {href:link,metadata:{type:"openpencil-capture-link",href:link}} : {}),
   };
+}
+
+// A link's target, absolute, for the schemes a design file can open.
+function linkTarget(href, baseUrl) {
+  if (!href) return null;
+  try {
+    const url = new URL(href, baseUrl || undefined);
+    return ["http:", "https:", "mailto:", "tel:"].includes(url.protocol) ? url.href : null;
+  } catch {
+    return null;
+  }
 }
 
 function makeTextUnderline(node, parent, name = `${semanticLayerName(node)} · Underline`, run = null) {
@@ -297,7 +310,7 @@ function controlText(node, parent) {
     x:round(node.rect.x - parent.rect.x + horizontalPadding), y:round(node.rect.y - parent.rect.y + (multiline ? verticalPadding : Math.max(0,(node.rect.height - lineHeight) / 2))),
     ...(multiline ? {width:round(Math.max(1,node.rect.width-horizontalPadding*2)),height:round(node.rect.height),textGrowth:"fixed-width-height"} : {textGrowth:"auto"}),
     content,
-    fill:colorWithOpacity(safeColor(hasValue ? node.styles.color : node.attributes.placeholderColor), hasValue ? 1 : node.attributes.placeholderOpacity) || safeColor(node.styles.color) || "#000000", fontFamily:fontFamily(node.styles.fontFamily), fontSize:round(fontSize), fontWeight:String(node.styles.fontWeight || "400"),
+    fill:colorWithOpacity(safeColor(hasValue ? node.styles.color : node.attributes.placeholderColor), hasValue ? 1 : node.attributes.placeholderOpacity) || safeColor(node.styles.color) || "#000000", fontFamily:fontFamily(node.styles.fontFamily, node.fontFamily), fontSize:round(fontSize), fontWeight:String(node.styles.fontWeight || "400"),
     fontStyle:node.styles.fontStyle || "normal", lineHeight:round(lineHeight / fontSize),
     measured:{width:round(Math.max(1,node.rect.width-horizontalPadding*2)),height:round(multiline ? node.rect.height : lineHeight),lineHeight:round(lineHeight)},
     textAlign:"left", ...(multiline ? {textAlignVertical:"top"} : {}),
@@ -578,13 +591,13 @@ export function convertCaptureToTree(capture) {
     if (textRuns.length) {
       textRuns.forEach((run, index) => {
         const suffix = textRuns.length > 1 ? ` · Line ${index + 1}` : "";
-        frame.children.push(makeText(node,node,`${semanticLayerName(node)} · Text${suffix}`,run,textBackground));
+        frame.children.push(makeText(node,node,`${semanticLayerName(node)} · Text${suffix}`,run,textBackground,capture.source?.url));
         const underline = makeTextUnderline(node,node,`${semanticLayerName(node)} · Underline${suffix}`,run);
         if (underline) { frame.children.push(underline); stats.frames += 1; }
       });
       stats.texts += textRuns.length;
     } else if (node.text && (!node.textRect || (node.textRect.width > 0 && node.textRect.height > 0))) {
-      frame.children.push(makeText(node, node, undefined, null, textBackground));
+      frame.children.push(makeText(node, node, undefined, null, textBackground, capture.source?.url));
       const underline = makeTextUnderline(node,node);
       if (underline) { frame.children.push(underline); stats.frames += 1; }
       stats.texts += 1;

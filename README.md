@@ -38,7 +38,8 @@ During serialization the toolbar collapses to `Capturing selection…` or `Captu
 | --- | --- |
 | HTML element | `FRAME` with absolute children, keeping the DOM hierarchy |
 | Unpainted SVG wrapper | `GROUP` fitted to its children |
-| Text | `TEXT`, one layer per visual line, with visible truncation kept as `...` |
+| Text | `TEXT`, one layer per visual line, with visible truncation kept as `...`, preformatted spaces, and the font family the browser drew with |
+| `<a href>` | Text hyperlink to the absolute target, for `http(s)`, `mailto` and `tel` |
 | `path`, `line`, `polyline`, `polygon`, partial circle | `VECTOR` with an editable vector network |
 | `rect`, `circle`, `ellipse` | `RECTANGLE`, `ELLIPSE` |
 | Color, including `oklch`, `oklab`, `lab`, `lch` and `color()` spaces | Solid fill |
@@ -68,13 +69,12 @@ Limits of the capture model:
 
 - Layout is absolute; Auto Layout is not inferred.
 - Pseudo-elements, masks and `transform` on SVG elements are not captured.
-- Filters other than `grayscale()` and `brightness()` are dropped. So are link targets; the underline stays.
+- Filters other than `grayscale()` and `brightness()` are dropped.
 - A diagonal SVG `<line>` is always drawn from top-left to bottom-right.
-- Text uses the first family in `font-family`, even if the browser fell back to a later one, so its metrics can differ.
 - Open shadow roots, SVG `<use>` sprites and iframe content in a whole-page capture come out empty.
 - Gradients blend in sRGB whatever `in <space>` says, and color hints are ignored. `background-repeat:space` repeats without spacing.
 - An elliptical corner (`border-radius:50%` on a box that is not square, `10px 20px`) becomes circular, with the smaller radius.
-- Dashed strokes and `<pre>` whitespace are not preserved.
+- Dashed strokes are not preserved.
 
 When a resource cannot be read, or the clipboard is misused:
 

@@ -14,7 +14,7 @@ export async function decodePng(png) {
   return {width, height, data};
 }
 
-// Pastes a capture into a headless editor and renders the pasted root as the editor draws it.
+// Pastes a capture into a headless editor; `render` draws the pasted root as the editor does.
 export async function renderInEditor(capture) {
   const tree = convertCaptureToTree(capture);
   const {html} = await createClipboardFromTree(tree.root, {loadImage:(url, size) => loadImageBytes(url, size)});
@@ -22,7 +22,8 @@ export async function renderInEditor(capture) {
   const pageId = editor.state.currentPageId;
   await editor.pasteFromHTML(html);
   const [root] = editor.graph.getChildren(pageId);
-  return {tree, root, png:await headlessRenderNodes(editor.graph, pageId, [root.id], {scale:1, format:"PNG"})};
+  const flatten = (id) => editor.graph.getChildren(id).flatMap((node) => [node, ...flatten(node.id)]);
+  return {tree, root, nodes:flatten(pageId), render:() => headlessRenderNodes(editor.graph, pageId, [root.id], {scale:1, format:"PNG"})};
 }
 
 const BLOCK = 4;

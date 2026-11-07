@@ -13,7 +13,7 @@ export const CAPTURED_STYLE_KEYS = [
   "borderTopLeftRadius", "borderTopRightRadius", "borderBottomRightRadius", "borderBottomLeftRadius",
   "fontFamily", "fontSize", "fontStyle", "fontWeight", "letterSpacing", "lineHeight",
   "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
-  "textAlign", "textTransform", "textDecorationLine", "textDecorationColor", "textDecorationThickness", "textUnderlineOffset", "whiteSpace", "textOverflow", "webkitLineClamp", "webkitBoxOrient", "opacity", "overflow", "visibility", "boxShadow",
+  "textAlign", "textTransform", "whiteSpaceCollapse", "tabSize", "textDecorationLine", "textDecorationColor", "textDecorationThickness", "textUnderlineOffset", "whiteSpace", "textOverflow", "webkitLineClamp", "webkitBoxOrient", "opacity", "overflow", "visibility", "boxShadow",
   "objectFit", "objectPosition", "filter", "mixBlendMode",
   "fill", "fillOpacity", "fillRule", "stroke", "strokeWidth", "strokeOpacity", "strokeDasharray", "strokeDashoffset",
   "stopColor", "stopOpacity",
@@ -71,6 +71,36 @@ function maskSnapshot(snapshot) {
   };
 }
 
+const GENERIC_FAMILIES = new Set(["serif", "sans-serif", "monospace", "cursive", "fantasy", "system-ui", "ui-serif", "ui-sans-serif", "ui-monospace", "ui-rounded", "math", "emoji", "fangsong", "-apple-system", "blinkmacsystemfont"]);
+const FONT_PROBE = "mmmmmmmmmlli1WQ@#&";
+
+function fontFamilies(value) {
+  return String(value || "").split(",").map((family) => family.trim().replace(/^['"]|['"]$/g, "")).filter(Boolean);
+}
+
+// The first family in `font-family` the browser can draw with: an unavailable one falls back, so
+// text measured with a fallback set as its own family keeps the fallback's width.
+function availableFamily(computed, cache) {
+  const families = fontFamilies(computed.fontFamily);
+  const context = document.createElement("canvas").getContext("2d");
+  if (!context) return families[0] || null;
+  for (const family of families) {
+    if (GENERIC_FAMILIES.has(family.toLowerCase())) return family;
+    const key = `${computed.fontStyle} ${computed.fontWeight} ${family}`;
+    if (!cache.has(key)) {
+      const quoted = `"${family.replace(/["\\]/g, "\\$&")}"`;
+      cache.set(key, ["monospace", "serif", "sans-serif"].some((fallback) => {
+        context.font = `${computed.fontStyle} ${computed.fontWeight} 72px ${fallback}`;
+        const base = context.measureText(FONT_PROBE).width;
+        context.font = `${computed.fontStyle} ${computed.fontWeight} 72px ${quoted}, ${fallback}`;
+        return context.measureText(FONT_PROBE).width !== base;
+      }));
+    }
+    if (cache.get(key)) return family;
+  }
+  return families.at(-1) || null;
+}
+
 function ellipsisWidth(computed) {
   const context = document.createElement("canvas").getContext("2d");
   if (!context) return Number.parseFloat(computed.fontSize) * 0.75;
@@ -98,7 +128,13 @@ function directTextSnapshot(node, rootRect, computed) {
     }
   }
   lines.sort((left, right) => left.top - right.top || left.entries[0]?.rect.left - right.entries[0]?.rect.left);
+  // `pre`, `pre-wrap` and `break-spaces` show every space; elsewhere runs of them collapse.
+  const keepsSpaces = /^(pre|pre-wrap|break-spaces)$/.test(computed.whiteSpace) || computed.whiteSpaceCollapse === "preserve" || computed.whiteSpaceCollapse === "break-spaces";
   for (const line of lines) {
+    if (keepsSpaces) {
+      while (line.entries.length && /[\n\r]/.test(line.entries.at(-1).character)) line.entries.pop();
+      continue;
+    }
     while (line.entries.length && /\s/.test(line.entries[0].character)) line.entries.shift();
     while (line.entries.length && /\s/.test(line.entries.at(-1).character)) line.entries.pop();
   }
@@ -129,7 +165,9 @@ function directTextSnapshot(node, rootRect, computed) {
   }
   const runs = visibleLines.flatMap((line, index) => {
     if (!line.entries.length) return [];
-    let text = line.entries.map((entry) => entry.character).join("").replace(/\s+/g," ");
+    const tabSpaces = " ".repeat(Number.parseInt(computed.tabSize, 10) || 8);
+    let text = line.entries.map((entry) => entry.character).join("");
+    text = keepsSpaces ? text.replace(/\t/g, tabSpaces).replace(/[\n\r]/g, "") : text.replace(/\s+/g, " ");
     if (truncated && index === visibleLines.length - 1) text = `${text.replace(/[.\s]+$/g, "")}...`;
     const left = Math.min(...line.entries.map((entry) => entry.rect.left));
     const top = Math.min(...line.entries.map((entry) => entry.rect.top));
@@ -221,6 +259,7 @@ export async function captureElement(root, options = {}) {
   // The page's canvas starts at the document origin: anything left of or above it cannot be seen.
   const canvas = {left:-view.scrollX, top:-view.scrollY, right:Infinity, bottom:Infinity};
   const nodes = [];
+  const fontCache = new Map();
   const visit = (node, path, parentPath, context) => {
     const tag = node.localName;
     const inResources = context.inResources || (node.namespaceURI === "http://www.w3.org/2000/svg" && SVG_RESOURCES.has(tag.toLowerCase()));
@@ -271,6 +310,7 @@ export async function captureElement(root, options = {}) {
       role: node.getAttribute("role"),
       name: node.getAttribute("data-slot") || node.getAttribute("aria-label") || text || node.tagName.toLowerCase(),
       text, textRect, textRuns,
+      ...(text || attributes.value || attributes.placeholder || attributes.maskedValue ? {fontFamily:availableFamily(computed, fontCache)} : {}),
       rect: { x: raw.x - rootRect.x, y: raw.y - rootRect.y, width: raw.width, height: raw.height },
       styles: Object.fromEntries(CAPTURED_STYLE_KEYS.map((key) => [key, computed[key]])),
       attributes,

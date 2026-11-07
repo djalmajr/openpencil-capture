@@ -26,7 +26,7 @@ const box = (style, inner = "") => `<div id="root" style="width:160px;height:96p
 async function fidelity(html, before) {
   const {capture, png} = await captureHtml(html, "#root", {screenshot:true, before});
   const rendered = await renderInEditor(capture);
-  return {difference:meanDifference(await decodePng(png), await decodePng(rendered.png)), tree:rendered.tree};
+  return {difference:meanDifference(await decodePng(png), await decodePng(await rendered.render())), tree:rendered.tree};
 }
 
 const THRESHOLD = 0.015;

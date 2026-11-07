@@ -1,6 +1,7 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { convertCaptureToTree, cssColorToHex } from "../src/convert-capture.mjs";
 import { hexToColor } from "../src/scene-nodes.mjs";
+import { renderInEditor } from "./support/render.mjs";
 import { useBrowser } from "./support/browser.mjs";
 
 const captureHtml = useBrowser();
@@ -108,5 +109,37 @@ describe("backgrounds", () => {
       ["Div · Background image 1", 10, 10, 20, 20, "radial"],
       ["Div · Background image 2", 0, 0, 100, 60, "linear"],
     ]);
+  });
+});
+
+describe("text", () => {
+  // Mutation captured: collapsing whitespace everywhere joins the columns of preformatted text.
+  test("keeps the spaces preformatted text shows", async () => {
+    const capture = await captureHtml(`<pre id="root" style="margin:0;font:14px monospace">a  b   c\n\tindented</pre>`);
+    expect(capture.nodes[0].textRuns.map((run) => run.text)).toEqual(["a  b   c", "        indented"]);
+  });
+
+  test("collapses spaces everywhere else", async () => {
+    const capture = await captureHtml(`<p id="root" style="margin:0">  a   b  </p>`);
+    expect(capture.nodes[0].text).toBe("a b");
+  });
+
+  // Regression: text took the first family listed even when the page fell back to another one.
+  test("names the family the browser drew with", async () => {
+    const capture = await captureHtml(`<p id="root" style="margin:0;font-family:'No Such Font Anywhere', Arial, sans-serif">Fallback</p>`);
+    expect(capture.nodes[0].fontFamily).toBe("Arial");
+    expect(convertCaptureToTree(capture).root.children[0].fontFamily).toBe("Arial");
+  });
+
+  test("links text to its absolute target in the editor", async () => {
+    const capture = await captureHtml(`<a id="root" href="/docs?page=2" style="display:inline-block">Docs</a>`);
+    const {nodes} = await renderInEditor(capture);
+    const text = nodes.find((node) => node.type === "TEXT");
+    expect(text.styleRuns).toEqual([{start:0, length:4, style:{hyperlink:{type:"URL", value:"https://example.test/docs?page=2"}}}]);
+  });
+
+  test("links nowhere a design file cannot open", async () => {
+    const capture = await captureHtml(`<a id="root" href="javascript:alert(1)" style="display:inline-block">Run</a>`);
+    expect(convertCaptureToTree(capture).root.children[0].href).toBeUndefined();
   });
 });

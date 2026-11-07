@@ -470,6 +470,16 @@ function roundRect(rect) {
   return {x:round(rect.x), y:round(rect.y), width:round(rect.width), height:round(rect.height)};
 }
 
+// The gradient each rasterized tile came from, so a color filter can draw the tile again.
+const gradientTiles = new WeakMap();
+
+export const gradientTileSource = (fill) => gradientTiles.get(fill) || null;
+
+export function withGradientTile(fill, source) {
+  gradientTiles.set(fill, source);
+  return fill;
+}
+
 /**
  * The CSS background images of a `width` × `height` box, bottom first. Each is a fill and, when
  * it does not paint the whole box, the `region` it paints. `imageSizes` holds the natural size of
@@ -526,7 +536,8 @@ export function cssBackgroundLayers(styles, width, height, {baseUrl, imageSizes 
       const gradient = parseCssGradient(value, tileSize);
       const url = gradient && rasterizeGradientTile(gradient, tileSize.width, tileSize.height);
       if (!url) return;
-      layers.push({fill:{type:"image", url, mode:"tile", imageRect:roundRect(placed.image), gradient:true}, region:sameRect(placed.region, full) ? null : roundRect(placed.region)});
+      const fill = withGradientTile({type:"image", url, mode:"tile", imageRect:roundRect(placed.image), gradient:true}, {gradient, width:tileSize.width, height:tileSize.height});
+      layers.push({fill, region:sameRect(placed.region, full) ? null : roundRect(placed.region)});
       return;
     }
     const region = placed.region;

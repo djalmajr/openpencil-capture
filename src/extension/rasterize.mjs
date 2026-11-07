@@ -12,7 +12,7 @@ export function rasterSize(natural, box) {
 }
 
 // Only the color filters a capture bakes in: nothing that reaches outside the image, like url().
-const BAKED_FILTER = /^(?:\s*(?:sepia|invert|saturate|hue-rotate|contrast)\(\s*-?[\d.]+(?:%|deg|turn|rad)?\s*\))+\s*$/;
+const BAKED_FILTER = /^(?:\s*(?:grayscale|sepia|invert|saturate|hue-rotate|brightness|contrast)\(\s*-?[\d.]+(?:%|deg|turn|rad)?\s*\))+\s*$/;
 
 export const isBakedFilter = (filter) => typeof filter === "string" && BAKED_FILTER.test(filter);
 

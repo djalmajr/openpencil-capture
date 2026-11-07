@@ -178,6 +178,8 @@ function commonProperties(node) {
     x:node.x ?? 0,
     y:node.y ?? 0,
     ...(node.opacity !== undefined && node.opacity < 1 ? {opacity:node.opacity} : {}),
+    // A mask masks the siblings after it, as in Figma.
+    ...(node.isMask ? {isMask:true, maskType:node.maskType || "ALPHA"} : {}),
   };
 }
 
@@ -211,6 +213,14 @@ function networkBounds({vertices, segments}) {
     ys.push(...cubicExtrema(a.y, a.y + tangentStart.y, b.y + tangentEnd.y, b.y));
   }
   return {minX:Math.min(...xs), minY:Math.min(...ys), maxX:Math.max(...xs), maxY:Math.max(...ys)};
+}
+
+// The box path data covers, curves included.
+export function pathBounds(geometry) {
+  const network = parseSVGPath(geometry, "NONZERO", {includeOpenRegions:true});
+  if (network.vertices.length === 0) return null;
+  const {minX, minY, maxX, maxY} = networkBounds(network);
+  return {x:minX, y:minY, width:maxX - minX, height:maxY - minY};
 }
 
 // The node's box is the path's own box, as in the editor: paint servers and selection both use it.

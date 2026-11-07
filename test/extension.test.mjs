@@ -219,6 +219,7 @@ describe("image loading", () => {
   // Security boundary: the offscreen canvas takes a filter string, and url() would reach outside.
   test("bakes only the color filters a capture produces", () => {
     expect(isBakedFilter("sepia(0.8) hue-rotate(90deg) contrast(120%)")).toBe(true);
+    expect(isBakedFilter("grayscale(1) brightness(0.6)")).toBe(true);
     expect(isBakedFilter("url(https://evil.test/f.svg#x)")).toBe(false);
     expect(isBakedFilter("blur(2px)")).toBe(false);
     expect(isBakedFilter("sepia(1) url(#x)")).toBe(false);

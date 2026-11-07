@@ -1,5 +1,7 @@
-import { cssBackgroundLayers, placeImage, resolveLength } from "./css-background.mjs";
+import { cssBackgroundLayers, cssImageUrl, placeImage, resolveLength } from "./css-background.mjs";
 import { colorWithCombinedOpacity, colorWithOpacity, gradientColor, safeColor } from "./css-color.mjs";
+import { pathBounds } from "./scene-nodes.mjs";
+import { clipPathGeometry, colorFilterFunctions, filterHex, filterTree, maskLayerStyles } from "./css-effects.mjs";
 import { clamp, px, round, splitCssArguments } from "./css-values.mjs";
 
 export { cssColorToHex } from "./css-color.mjs";
@@ -44,6 +46,59 @@ function backgroundLayers(node, capture) {
   return cssBackgroundLayers(node.styles, node.rect.width, node.rect.height, {
     baseUrl:capture?.source?.url, imageSizes:capture?.imageSizes, resolveUrl:assetUrl,
   });
+}
+
+// A mask-image url() naming a <mask> element of the page draws nothing the editor can load.
+function referencesDocument(url, pageUrl) {
+  if (!url || url.startsWith("#")) return true;
+  try {
+    const target = new URL(url, pageUrl || undefined);
+    const page = new URL(pageUrl || target.href);
+    return Boolean(target.hash) && target.href.slice(0, -target.hash.length) === page.href.replace(/#.*$/, "");
+  } catch {
+    return true;
+  }
+}
+
+function maskedGroup(layer, mask) {
+  return {type:"group", name:layer.name, layoutPosition:"absolute", x:layer.x, y:layer.y, children:[mask, {...layer, x:0, y:0}]};
+}
+
+/**
+ * `mask-image` and a `clip-path` shape, as the editor's masks: the layer goes into a group whose
+ * first child masks it, an alpha (or luminance) frame of the mask's layers placed like
+ * backgrounds, and a vector of the clip shape. Returns null when the clip shape is empty.
+ */
+function withCssMasks(node, layer, capture) {
+  if (!layer || node.namespace === "http://www.w3.org/2000/svg") return layer;
+  const width = round(node.rect.width);
+  const height = round(node.rect.height);
+  const geometry = clipPathGeometry(node.styles.clipPath, width, height);
+  if (geometry === "") return null;
+  let result = layer;
+  const images = splitCssArguments(node.styles.maskImage || "none").filter((value) => value && value !== "none");
+  const pageUrl = capture?.source?.url;
+  if (images.length && !images.some((value) => cssImageUrl(value) && referencesDocument(cssImageUrl(value), pageUrl))) {
+    const layers = cssBackgroundLayers(maskLayerStyles(node.styles), width, height, {baseUrl:pageUrl, imageSizes:capture?.imageSizes, resolveUrl:assetUrl});
+    result = maskedGroup(result, {
+      type:"frame", name:`${semanticLayerName(node)} · Mask`, layout:"none", layoutPosition:"absolute", x:0, y:0, width, height,
+      isMask:true, maskType:node.styles.maskMode === "luminance" ? "LUMINANCE" : "ALPHA",
+      children:layers.map((mask, index) => ({type:"rectangle", name:`${semanticLayerName(node)} · Mask layer ${index + 1}`, layoutPosition:"absolute", ...(mask.region || {x:0, y:0, width, height}), fill:mask.fill})),
+    });
+  }
+  if (geometry) {
+    result = maskedGroup(result, {
+      type:"path", name:`${semanticLayerName(node)} · Clip path`, layoutPosition:"absolute", x:0, y:0, width, height,
+      geometry, viewBox:[0, 0, width, height], fill:"#000000", isMask:true, maskType:"VECTOR",
+    });
+    // A shape reaching past the box would widen the group past the element; what it would show
+    // there is only overflowing content, which the box then clips.
+    const bounds = pathBounds(geometry);
+    if (bounds && (bounds.x < -0.5 || bounds.y < -0.5 || bounds.x + bounds.width > width + 0.5 || bounds.y + bounds.height > height + 0.5)) {
+      result = {type:"frame", name:result.name, layout:"none", layoutPosition:"absolute", x:result.x, y:result.y, width, height, clip:true, children:[{...result, x:0, y:0}]};
+    }
+  }
+  return result;
 }
 
 // The topmost background image or gradient as a fill.
@@ -404,18 +459,33 @@ const filterNumber = (value) => {
 
 // What a filter becomes in the editor: blurs and drop shadows as effects, opacity() as layer
 // opacity. Color functions stay for images, which take them in their pixels.
+// Layers and effects whose colors already went through the filters that reach them.
+const settled = new WeakSet();
+
 function filterEffects(filter) {
   const effects = [];
   let opacity = 1;
-  for (const {name, args} of filterFunctions(filter)) {
+  const functions = filterFunctions(filter);
+  functions.forEach(({name, args}, index) => {
     if (name === "blur" && px(args) > 0) effects.push({type:"blur", kind:"layer", sigma:px(args)});
     if (name === "opacity" && Number.isFinite(filterNumber(args))) opacity *= clamp(filterNumber(args));
     if (name === "drop-shadow") {
       const [shadow] = parseCssShadows(args);
-      if (shadow) effects.push({...shadow, spread:0});
+      // A shadow takes only the color functions applied after it.
+      if (shadow) {
+        const effect = {...shadow, spread:0, color:filterHex(shadow.color, colorFilterFunctions(functions.slice(index + 1)))};
+        settled.add(effect);
+        effects.push(effect);
+      }
     }
-  }
+  });
   return {effects, opacity};
+}
+
+// The color functions of an element's own filter reach every color it and its content paint.
+function applyColorFilter(node, layer) {
+  if (layer) filterTree(layer, colorFilterFunctions(filterFunctions(node.styles.filter)), settled);
+  return layer;
 }
 
 function backdropEffects(value) {
@@ -445,11 +515,12 @@ function filteredImageNode(node, parent, url) {
   const grayscale = filterAmount(filter,"grayscale");
   const brightness = filterAmount(filter,"brightness");
   const darkened = Number.isFinite(brightness) && brightness >= 0 && brightness < 1;
-  const backgroundColor = safeColor(node.styles.backgroundColor);
+  const baked = bakedFilter(filter);
+  // The background is painted through the functions the pixels take; the overlays cover it too.
+  const backgroundColor = filterHex(safeColor(node.styles.backgroundColor), colorFilterFunctions(filterFunctions(baked)));
   const radius = cornerRadius(node);
   const coversBox = placement && placement.region.x === 0 && placement.region.y === 0 && placement.region.width === rect.width && placement.region.height === rect.height;
   const metadata = filter && filter !== "none" ? {metadata:{type:"openpencil-capture-image",filter}} : {};
-  const baked = bakedFilter(filter);
   if (placement && baked) placement.fill = {...placement.fill, filter:baked};
   const own = filterEffects(node.styles.filter);
   const effectProperties = {
@@ -661,7 +732,7 @@ export function convertCaptureToTree(capture) {
         if (graphic.fill?.type === "gradient") stats.gradients += 1;
       }
       else stats.skippedSvgUnsupported += 1;
-      return graphic;
+      return applyColorFilter(node, graphic);
     }
     if (node.tag === "img" || node.tag === "canvas") {
       const url = node.tag === "canvas"
@@ -676,8 +747,13 @@ export function convertCaptureToTree(capture) {
       }
       if (!url) { stats.skipped += 1; return null; }
       stats.images += 1;
-      if (node.tag === "img") return filteredImageNode(node,parent,url);
-      return {type:"rectangle",name:semanticLayerName(node),layoutPosition:"absolute",...relativeRect(node,parent),fill:{type:"image",url,mode:"stretch"},cornerRadius:cornerRadius(node)};
+      // An <img> already takes the filters of its ancestors; they must not reach it twice.
+      if (node.tag === "img") {
+        const image = filteredImageNode(node,parent,url);
+        if (image) settled.add(image);
+        return withCssMasks(node, image, capture);
+      }
+      return withCssMasks(node, applyColorFilter(node, {type:"rectangle",name:semanticLayerName(node),layoutPosition:"absolute",...relativeRect(node,parent),fill:{type:"image",url,mode:"stretch"},cornerRadius:cornerRadius(node)}), capture);
     }
     // A frame shows its document's canvas background, which the element it came from no longer paints.
     const propagated = node.attributes.backgroundPropagated;
@@ -763,7 +839,7 @@ export function convertCaptureToTree(capture) {
       const child = convertNode(byPath.get(path), node, textBackground);
       if (child) frame.children.push(child);
     }
-    return frame;
+    return withCssMasks(node, applyColorFilter(node, frame), capture);
   };
   const root = convertNode(rootSource, { rect:{ x:0, y:0 } });
   if (!root) throw new Error("The selected element is not visible");

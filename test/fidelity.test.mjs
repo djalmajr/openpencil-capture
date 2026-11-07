@@ -23,10 +23,21 @@ const box = (style, inner = "") => `<div id="root" style="width:160px;height:96p
 // The browser's pixels against the editor's, after capture and paste. A threshold of 1.5% of the
 // channel range allows for antialiasing and image filtering, but not a gradient running the wrong
 // way, a misplaced stop, or an image in the wrong place.
-async function fidelity(html, before) {
+async function fidelity(html, before, {crop = false} = {}) {
   const {capture, png} = await captureHtml(html, "#root", {screenshot:true, before});
   const rendered = await renderInEditor(capture);
-  return {difference:meanDifference(await decodePng(png), await decodePng(await rendered.render())), tree:rendered.tree};
+  const page = await decodePng(png);
+  const editor = await decodePng(await rendered.render());
+  return {difference:meanDifference(page, crop ? cropImage(editor, page.width, page.height) : editor), tree:rendered.tree};
+}
+
+// The editor exports a masked group with the bounds of what it masks, so content a mask cuts
+// away can widen the image past the element; the element is its top-left corner.
+function cropImage(image, width, height) {
+  if (image.width < width || image.height < height) return image;
+  const data = new Uint8Array(width * height * 4);
+  for (let y = 0; y < height; y += 1) data.set(image.data.subarray(y * image.width * 4, (y * image.width + width) * 4), y * width * 4);
+  return {width, height, data};
 }
 
 const THRESHOLD = 0.015;
@@ -68,11 +79,22 @@ describe("the pasted design looks like the page", () => {
       + box("background:rgb(255, 255, 255);border:3px solid rgb(30, 30, 30);box-sizing:border-box"),
     "a gradient anchored to the content box repeats over the padding": box("padding:20px;box-sizing:border-box;background:linear-gradient(rgb(255, 0, 0), rgb(0, 0, 255)) content-box border-box"),
     "a userSpaceOnUse radial gradient on a moved shape": box("background:rgb(255, 255, 255)", `<svg width="160" height="96" viewBox="0 0 80 48" style="display:block"><defs><radialGradient id="spot" gradientUnits="userSpaceOnUse" cx="20" cy="20" r="16"><stop offset="0" stop-color="rgb(255, 220, 0)"/><stop offset="1" stop-color="rgb(200, 0, 80)"/></radialGradient></defs><g transform="translate(30 4)"><circle cx="20" cy="20" r="18" fill="url(#spot)"/></g></svg>`),
+    "a color filter over a gradient, a border and a child": box("margin:8px;width:144px;height:80px;background:linear-gradient(90deg, rgb(200, 60, 30), rgb(30, 120, 200));border:6px solid rgb(40, 160, 60);box-sizing:border-box;filter:sepia(0.6) hue-rotate(40deg) saturate(1.4)", `<div style="margin:14px;width:40px;height:30px;background:rgb(250, 220, 40)"></div>`),
+    "a grayscale and darkened dot grid": box("filter:grayscale(1) brightness(0.7);background:rgb(250, 200, 200) radial-gradient(circle, rgb(200, 30, 30) 4px, transparent 4px) 0 0 / 16px 16px"),
+    "an inverted box with a filtered child": box("background:rgb(255, 255, 255);filter:invert(1)", `<div style="margin:16px;width:80px;height:40px;background:rgb(20, 120, 220);filter:contrast(1.6)"></div>`),
+    "a polygon clip path": box("background:rgb(30, 130, 220);clip-path:polygon(50% 0, 100% 100%, 0 100%)"),
+    "a circle clip path off center": box("background:linear-gradient(rgb(255, 120, 0), rgb(120, 0, 200));clip-path:circle(40px at 60% 50%)"),
+    "an inset clip path with round corners": box("background:rgb(220, 40, 90);clip-path:inset(10px 20px round 12px)"),
+    "an ellipse clip path": box("background:rgb(20, 160, 120);clip-path:ellipse(50% 30% at 40% 50%)"),
+    "a path() clip path": box("background:rgb(80, 60, 200);clip-path:path('M0 0 L160 0 L80 90 Z')"),
+    "a clip path over content that overflows": box("background:rgb(255, 255, 255);clip-path:inset(8px)", `<div style="width:220px;height:40px;background:rgb(200, 30, 30)"></div>`),
+    "a gradient mask": box("background:rgb(30, 90, 220);mask-image:linear-gradient(90deg, rgb(0, 0, 0), transparent)"),
+    "a repeated radial mask": box("background:rgb(200, 40, 40);mask:radial-gradient(circle, rgb(0, 0, 0) 6px, transparent 6px) 0 0 / 20px 20px"),
     "an image at its natural size": box("background:rgb(255, 255, 255)", `<img src="${QUADRANTS}" style="width:160px;height:96px;object-fit:none;object-position:right 20px top 10px;display:block">`),
   };
   for (const [name, html] of Object.entries(cases)) {
     test(name, async () => {
-      const {difference} = await fidelity(html.includes("<x-card") ? `<script>customElements.define("x-card", class extends HTMLElement { constructor() { super(); this.attachShadow({mode:"open"}).innerHTML = '<div style="position:absolute;margin:20px 0 0 60px;width:80px;height:50px;background:rgb(240, 90, 30)"></div><div style="padding:8px"><slot></slot></div>'; } });</script>${html}` : html, name.startsWith("a scrolled") ? () => { document.querySelector("#root").scrollTop = 120; } : undefined);
+      const {difference} = await fidelity(html.includes("<x-card") ? `<script>customElements.define("x-card", class extends HTMLElement { constructor() { super(); this.attachShadow({mode:"open"}).innerHTML = '<div style="position:absolute;margin:20px 0 0 60px;width:80px;height:50px;background:rgb(240, 90, 30)"></div><div style="padding:8px"><slot></slot></div>'; } });</script>${html}` : html, name.startsWith("a scrolled") ? () => { document.querySelector("#root").scrollTop = 120; } : undefined, {crop:name.includes("overflows")});
       expect(difference).toBeLessThan(THRESHOLD);
     });
   }

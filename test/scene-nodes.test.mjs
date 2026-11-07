@@ -243,3 +243,11 @@ describe("structure", () => {
     expect([...requests.values()]).toEqual([{url, width:10, height:10}, {url, filter:"sepia(1)", width:10, height:10}]);
   });
 });
+
+describe("masks", () => {
+  test("marks a mask layer so it masks the siblings after it", () => {
+    const node = convertChild({type:"path", name:"Clip", x:0, y:0, width:10, height:10, geometry:"M 0 0 H 10 V 10 Z", viewBox:[0, 0, 10, 10], fill:"#000000", isMask:true, maskType:"VECTOR"});
+    expect(node).toMatchObject({type:"VECTOR", isMask:true, maskType:"VECTOR"});
+    expect(convertChild({type:"rectangle", name:"Plain", x:0, y:0, width:10, height:10, fill:"#000000"}).isMask).toBeUndefined();
+  });
+});

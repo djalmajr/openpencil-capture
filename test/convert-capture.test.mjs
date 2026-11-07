@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { convertCaptureToTree, cssBackgroundToFill, cssColorToHex } from "../src/convert-capture.mjs";
+import { filterHex } from "../src/css-effects.mjs";
 
 const rootStyles = { backgroundColor:"oklch(1 0 0)", borderTopColor:"oklch(0.93 0.007 106.5)", borderTopLeftRadius:"8px", borderTopRightRadius:"8px", borderBottomRightRadius:"8px", borderBottomLeftRadius:"8px", opacity:"1" };
 
@@ -501,5 +502,67 @@ describe("convertCaptureToTree", () => {
     const area = convertCaptureToTree(capture).root.children[0].children.find((child) => child.type === "path");
     expect(area.fill).toMatchObject({type:"gradient",gradientType:"linear",rotation:180});
     expect(area.fill.colors).toEqual([{color:"#FFD2302E",position:0},{color:"#FFD23008",position:1}]);
+  });
+});
+
+describe("CSS color filters on what an element paints", () => {
+  test("recolors in sRGB, one function after another, as Chromium does", () => {
+    // Chromium paints rgb(200, 60, 30) through grayscale(1) as 88, 88, 88 and through
+    // hue-rotate(90deg) as 30, 116, 0.
+    expect(filterHex("#C83C1E", [{name:"grayscale", args:"1"}])).toBe("#585858");
+    expect(filterHex("#C83C1E", [{name:"hue-rotate", args:"90deg"}])).toBe("#1E7400");
+    expect(filterHex("#C83C1E80", [{name:"invert", args:"100%"}])).toBe("#37C3E180");
+  });
+
+  test("filters a shadow only with the functions after it", () => {
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 80, 40], {backgroundColor:"rgb(255, 0, 0)", filter:"invert(1) drop-shadow(rgb(255, 0, 0) 2px 2px 0px) grayscale(1)"}]));
+    expect(root.fill).toBe("#C9C9C9");
+    expect(root.effect).toMatchObject({color:"#363636"});
+  });
+
+  test("leaves an image to the filters the page gave it", () => {
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 80, 40], {filter:"sepia(1)"}], ["0.0", "img", [0, 0, 80, 40], {}, {attributes:{currentSrc:"https://example.test/a.png", effectiveFilter:"sepia(1)"}}]));
+    expect(root.children[0].children[0].fill.filter).toBe("sepia(1)");
+    // Its own background goes through the same functions as its pixels, once.
+    expect(root.children[0].fill).toBe("#FFFFEF");
+  });
+
+  test("bakes a filter into a CSS background image", () => {
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 80, 40], {backgroundImage:'url("https://example.test/a.png")', filter:"brightness(0.5)"}]));
+    expect(root.fill).toEqual(["#808080", {type:"image", url:"https://example.test/a.png", mode:"stretch", filter:"brightness(0.5)"}]);
+  });
+});
+
+describe("CSS masks and clip paths", () => {
+  test("masks the element with its clip shape, mask first in a group", () => {
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 100, 80]], ["0.0", "div", [10, 10, 60, 40], {clipPath:"inset(5px 10px round 4px)"}]));
+    const group = root.children[0];
+    expect(group).toMatchObject({type:"group", x:10, y:10});
+    expect(group.children[0]).toMatchObject({type:"path", isMask:true, maskType:"VECTOR", geometry:expect.stringMatching(/^M 14 5 H 46 A 4 4/)});
+    expect(group.children[1]).toMatchObject({type:"frame", x:0, y:0, width:60, height:40});
+  });
+
+  test("skips an element its clip shape hides", () => {
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 100, 80]], ["0.0", "div", [10, 10, 60, 40], {clipPath:"inset(50%)"}]));
+    expect(root.children).toEqual([]);
+  });
+
+  test("clips a shape that reaches past the box to the box", () => {
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 100, 80]], ["0.0", "div", [10, 10, 60, 40], {clipPath:"circle(40px at 0px 0px)"}]));
+    expect(root.children[0]).toMatchObject({type:"frame", x:10, y:10, width:60, height:40, clip:true});
+    expect(root.children[0].children[0]).toMatchObject({type:"group", x:0, y:0});
+  });
+
+  test("turns mask layers into an alpha mask placed like backgrounds", () => {
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 100, 80], {maskImage:"linear-gradient(rgb(0, 0, 0), rgba(0, 0, 0, 0))", maskSize:"50% 100%", maskRepeat:"no-repeat", maskPosition:"100% 0%"}]));
+    const [mask, frame] = root.children;
+    expect(mask).toMatchObject({type:"frame", isMask:true, maskType:"ALPHA", width:100, height:80});
+    expect(mask.children[0]).toMatchObject({type:"rectangle", x:50, y:0, width:50, height:80, fill:{type:"gradient"}});
+    expect(frame).toMatchObject({type:"frame", name:"Div"});
+  });
+
+  test("leaves a mask naming a <mask> element of the page alone", () => {
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 100, 80], {maskImage:'url("https://example.test/#m")'}]));
+    expect(root.type).toBe("frame");
   });
 });

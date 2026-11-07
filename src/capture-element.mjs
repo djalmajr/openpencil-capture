@@ -17,6 +17,7 @@ export const CAPTURED_STYLE_KEYS = [
   "objectFit", "objectPosition", "filter", "backdropFilter", "mixBlendMode",
   "fill", "fillOpacity", "fillRule", "stroke", "strokeWidth", "strokeOpacity", "strokeDasharray", "strokeDashoffset", "strokeLinecap", "strokeLinejoin",
   "stopColor", "stopOpacity",
+  "clipPath", "maskImage", "maskSize", "maskPosition", "maskRepeat", "maskOrigin", "maskClip", "maskMode",
 ];
 
 const CAPTURED_ATTRIBUTES = new Set([
@@ -360,12 +361,12 @@ function pseudoBox(node, computed) {
 
 const IMAGE_MEASURE_TIMEOUT_MS = 3000;
 
-// Where a background image lands depends on its natural size, which only the page knows. The
+// Where a background or mask image lands depends on its natural size, which only the page knows. The
 // browser has already loaded each one, so this mostly reads its cache.
 async function measureBackgroundImages(nodes) {
   const urls = new Set();
   for (const node of nodes) {
-    for (const match of String(node.styles.backgroundImage || "").matchAll(/url\((?:"([^"]+)"|'([^']+)'|([^)'"\s]+))\)/gi)) {
+    for (const match of `${node.styles.backgroundImage || ""} ${node.styles.maskImage || ""}`.matchAll(/url\((?:"([^"]+)"|'([^']+)'|([^)'"\s]+))\)/gi)) {
       urls.add(match.slice(1).find(Boolean));
     }
   }

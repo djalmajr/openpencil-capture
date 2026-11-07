@@ -175,10 +175,11 @@ describe("baking filters into images", () => {
         context.drawImage(image, 0, 0, 1, 1);
         return Array.from(context.getImageData(0, 0, 1, 1).data);
       };
-      return {inverted:await pixelOf("invert(1)"), refused:await pixelOf("grayscale(1)")};
+      return {inverted:await pixelOf("invert(1)"), grayed:await pixelOf("grayscale(1) brightness(0.5)"), refused:await pixelOf("blur(1px)")};
     }, {source, red});
     expect(pixel.inverted).toEqual([0, 255, 255, 255]);
-    // Mutation captured: without the allow-list the canvas would gray the pixel.
+    expect(pixel.grayed).toEqual([27, 27, 27, 255]);
+    // Mutation captured: without the allow-list the canvas would blur the pixel into its edges.
     expect(pixel.refused).toEqual([255, 0, 0, 255]);
   });
 });

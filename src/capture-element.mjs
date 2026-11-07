@@ -474,7 +474,9 @@ export async function captureElement(root, options = {}) {
     const childContext = {...context, inResources, clip:ownClip};
     // Pseudo-elements are part of the content `content-visibility:hidden` skips; replaced elements
     // such as <img> and <input> draw none.
-    const drawsPseudo = !isSvg && !inResources && computed.contentVisibility !== "hidden" && !closedDetails && !REPLACED_ELEMENTS.has(tag);
+    // An <input> with `appearance:none` (a custom checkbox or toggle) does draw them.
+    const replaced = REPLACED_ELEMENTS.has(tag) && !(tag === "input" && computed.appearance === "none");
+    const drawsPseudo = !isSvg && !inResources && computed.contentVisibility !== "hidden" && !closedDetails && !replaced;
     if (drawsPseudo) visitPseudo(node, "::before", path, childContext);
     childNodes.filter((child) => child.nodeType === 1).forEach((child, index) => visit(child, `${path}.${index}`, path, childContext));
     if (drawsPseudo) visitPseudo(node, "::after", path, childContext);

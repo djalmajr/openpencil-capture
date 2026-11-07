@@ -229,6 +229,13 @@ describe("what a capture may contain, at the edges", () => {
     expect(capture.nodes.find((node) => node.tag === "::after")?.text).toBe("••••••••••••");
   });
 
+  // Chromium draws pseudo-elements on an `appearance:none` input, the usual custom checkbox.
+  test("keeps the mark of a custom checkbox and draws none on a native one", async () => {
+    const capture = await captureHtml(`<style>input{position:relative;width:20px;height:20px}input::after{content:"";position:absolute;inset:4px;background:rgb(0, 150, 80)}.custom{appearance:none}</style>
+      <div id="root"><input class="custom" type="checkbox"><input type="checkbox"></div>`);
+    expect(capture.nodes.map((node) => node.tag)).toEqual(["div", "input", "::after", "input"]);
+  });
+
   // Regression: Astro islands nest display:contents wrappers, and their content was dropped.
   test("keeps content inside nested display:contents wrappers", async () => {
     const capture = await captureHtml(`<div id="root"><astro-island style="display:contents"><astro-slot style="display:contents"><p>island</p></astro-slot></astro-island></div>`);

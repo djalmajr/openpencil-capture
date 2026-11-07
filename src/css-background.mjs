@@ -513,11 +513,14 @@ export function cssBackgroundLayers(styles, width, height, {baseUrl, imageSizes 
     const tileSize = resolveSize(sizeValue, area, null);
     const placed = placeImage({area, clip, size:tileSize, position, repeat});
     if (!placed) return;
-    // A gradient sized to its positioning area repeats only into the border strip, where a border
-    // usually covers it: it stays a native gradient. One smaller than its area tiles.
+    // A gradient filling a padding-box area repeats only into the border strip, which a border
+    // usually covers, so it stays a native gradient. One smaller than its area tiles, and so does one
+    // anchored to the content box, whose repeat shows over the padding.
     const offsetX = position.x(area.width - tileSize.width);
     const offsetY = position.y(area.height - tileSize.height);
-    const tiled = placed.repeats && (tileSize.width < area.width - 1 || tileSize.height < area.height - 1 || Math.abs(offsetX) > 0.5 || Math.abs(offsetY) > 0.5);
+    const padding = boxFor("padding-box", styles, width, height);
+    const repeatsOnlyUnderBorder = sameRect(area, clip) || sameRect(area, padding);
+    const tiled = placed.repeats && (tileSize.width < area.width - 1 || tileSize.height < area.height - 1 || Math.abs(offsetX) > 0.5 || Math.abs(offsetY) > 0.5 || !repeatsOnlyUnderBorder);
     if (tiled) {
       const gradient = parseCssGradient(value, tileSize);
       const url = gradient && rasterizeGradientTile(gradient, tileSize.width, tileSize.height);

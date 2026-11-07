@@ -11,6 +11,11 @@ export function rasterSize(natural, box) {
   return {width:Math.max(1, Math.round(naturalWidth * scale)), height:Math.max(1, Math.round(naturalHeight * scale))};
 }
 
+// Only the color filters a capture bakes in: nothing that reaches outside the image, like url().
+const BAKED_FILTER = /^(?:\s*(?:sepia|invert|saturate|hue-rotate|contrast)\(\s*-?[\d.]+(?:%|deg|turn|rad)?\s*\))+\s*$/;
+
+export const isBakedFilter = (filter) => typeof filter === "string" && BAKED_FILTER.test(filter);
+
 export async function rasterizeImage(dataUrl, box) {
   const image = new Image();
   image.src = dataUrl;
@@ -19,6 +24,8 @@ export async function rasterizeImage(dataUrl, box) {
   const canvas = document.createElement("canvas");
   canvas.width = width;
   canvas.height = height;
-  canvas.getContext("2d").drawImage(image, 0, 0, width, height);
+  const context = canvas.getContext("2d");
+  if (isBakedFilter(box.filter)) context.filter = box.filter;
+  context.drawImage(image, 0, 0, width, height);
   return canvas.toDataURL("image/png");
 }

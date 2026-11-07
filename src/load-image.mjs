@@ -38,9 +38,16 @@ async function fetchBytes(url, {fetchImpl = globalThis.fetch, requestAsset}) {
   }
 }
 
+// `size.filter` holds color filters to bake in, which takes the extension's canvas; without it
+// the image comes through unfiltered.
 export async function loadImageBytes(url, size, options = {}) {
   const bytes = await fetchBytes(url, options);
-  if (!bytes || isEditorDecodableImage(bytes)) return bytes;
+  if (!bytes) return bytes;
+  if (size?.filter && options.requestAsset) {
+    const filtered = await options.requestAsset({url:encodeDataUrl(bytes), rasterize:{width:size.width, height:size.height, filter:size.filter}});
+    if (filtered) return decodeDataUrl(filtered);
+  }
+  if (isEditorDecodableImage(bytes)) return bytes;
   const rasterized = await options.requestAsset?.({url:encodeDataUrl(bytes), rasterize:size});
   return rasterized ? decodeDataUrl(rasterized) : null;
 }

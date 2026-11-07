@@ -1,0 +1,3 @@
+# Project scope marker for ai-memory. Contains no credentials.
+workspace = "djalmajr"
+project = "openpencil-capture"

@@ -8,6 +8,12 @@ export async function captureSelection(target, sourceSelector, options = {}) {
     selector: sourceSelector,
     url: globalThis.location.href,
     requestAsset: options.requestAsset,
+    // Extensions may read closed shadow roots too: what they hold is on screen like the rest.
+    // The API takes HTML elements only; it throws for SVG ones, which have no shadow root anyway.
+    // The namespace, unlike instanceof, also holds for elements of a same-origin frame's document.
+    shadowRootOf: (element) => element.namespaceURI === "http://www.w3.org/1999/xhtml" && globalThis.chrome?.dom?.openOrClosedShadowRoot
+      ? globalThis.chrome.dom.openOrClosedShadowRoot(element) ?? null
+      : element.shadowRoot ?? null,
   });
   const countNodes = (node) => 1 + (node.children || []).reduce((total, child) => total + countNodes(child), 0);
   const capturedTags = Object.fromEntries(Object.entries(capture.nodes.reduce((counts, node) => {

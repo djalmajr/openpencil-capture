@@ -1,0 +1,78 @@
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
+import { encodeBase64 } from "../src/base64.mjs";
+import { encodePng } from "../src/css-background.mjs";
+import { useBrowser } from "./support/browser.mjs";
+import { decodePng, meanDifference, renderInEditor } from "./support/render.mjs";
+
+const captureHtml = useBrowser();
+setDefaultTimeout(60_000);
+
+// An 8 × 8 image in four colored quadrants, so a misplaced or mis-scaled image shows.
+const QUADRANTS = (() => {
+  const colors = [[230, 40, 40], [40, 170, 60], [40, 80, 220], [240, 200, 30]];
+  const rgba = new Uint8Array(8 * 8 * 4);
+  for (let y = 0; y < 8; y += 1) {
+    for (let x = 0; x < 8; x += 1) rgba.set([...colors[(y >= 4 ? 2 : 0) + (x >= 4 ? 1 : 0)], 255], (y * 8 + x) * 4);
+  }
+  return `data:image/png;base64,${encodeBase64(encodePng(8, 8, rgba))}`;
+})();
+
+// Each fixture is one box with no text: text rasterizes differently in each engine.
+const box = (style, inner = "") => `<div id="root" style="width:160px;height:96px;${style}">${inner}</div>`;
+
+// The browser's pixels against the editor's, after capture and paste. A threshold of 1.5% of the
+// channel range allows for antialiasing and image filtering, but not a gradient running the wrong
+// way, a misplaced stop, or an image in the wrong place.
+async function fidelity(html, before) {
+  const {capture, png} = await captureHtml(html, "#root", {screenshot:true, before});
+  const rendered = await renderInEditor(capture);
+  return {difference:meanDifference(await decodePng(png), await decodePng(await rendered.render())), tree:rendered.tree};
+}
+
+const THRESHOLD = 0.015;
+
+describe("the pasted design looks like the page", () => {
+  const cases = {
+    "a linear gradient toward a side": box("background:linear-gradient(to right, rgb(255, 0, 0), rgb(0, 0, 255))"),
+    "a linear gradient toward a corner of a wide box": box("background:linear-gradient(to top right, rgb(255, 200, 0), rgb(0, 120, 255) 70%)"),
+    "a linear gradient with stops in pixels": box("background:linear-gradient(30deg, rgb(20, 20, 20) 20px, rgb(240, 240, 240) 90px, rgb(200, 0, 120))"),
+    "stops with positions left out": box("background:linear-gradient(90deg, red, yellow, lime 80%, aqua, blue)"),
+    "a repeating linear gradient": box("background:repeating-linear-gradient(90deg, rgb(255, 255, 255) 0 10%, rgb(30, 30, 30) 10% 20%)"),
+    "a gradient blended in oklab, as Tailwind writes it": box("background:linear-gradient(to right in oklab, rgb(255, 0, 0), rgb(0, 0, 255))"),
+    "a gradient of oklch colors, which blends in oklab by default": box("background:linear-gradient(90deg, oklch(0.7 0.2 30), oklch(0.6 0.2 260))"),
+    "a gradient around the long way of the hue wheel": box("background:linear-gradient(90deg in oklch longer hue, oklch(0.7 0.15 30), oklch(0.7 0.15 90))"),
+    "a gradient bent by a color hint": box("background:linear-gradient(90deg, rgb(255, 255, 255), 15%, rgb(0, 0, 0))"),
+    "a radial gradient to the farthest corner": box("background:radial-gradient(rgb(255, 255, 255), rgb(0, 90, 200))"),
+    "an off-center circle to its closest side": box("background:radial-gradient(circle closest-side at 30% 40%, rgb(255, 230, 0), rgb(200, 30, 30) 80%, rgb(30, 30, 30))"),
+    "an elliptical gradient with explicit radii": box("background:radial-gradient(60px 30px at 70% 60%, rgb(0, 200, 120), rgb(255, 255, 255))"),
+    "a conic gradient": box("background:conic-gradient(from 45deg at 30% 40%, rgb(255, 0, 0), rgb(0, 0, 255) 50%, rgb(0, 160, 0))"),
+    "a dot grid": box("background:rgb(250, 250, 250) radial-gradient(circle, rgb(30, 30, 30) 3px, transparent 3px) 0 0 / 16px 16px"),
+    "a gradient over an image over a color": box(`background:linear-gradient(rgba(0, 0, 0, 0), rgba(0, 0, 0, 0.6)), url(${QUADRANTS}) center / cover, rgb(10, 10, 10)`),
+    "an image placed in a corner without repeating": box(`background:rgb(255, 255, 255) url(${QUADRANTS}) right 10px bottom 8px / 40px no-repeat`),
+    "an image repeated along one axis": box(`background:rgb(255, 255, 255) url(${QUADRANTS}) 0 20px / 24px repeat-x`),
+    "a tiled image": box(`background:url(${QUADRANTS}) 5px 5px / 20px 20px`),
+    "an image contained in its box": box("background:rgb(255, 255, 255)", `<img src="${QUADRANTS}" style="width:160px;height:96px;object-fit:contain;display:block;background:rgb(200, 220, 255)">`),
+    "an image covering its box from a corner": box("", `<img src="${QUADRANTS}" style="width:160px;height:96px;object-fit:cover;object-position:0% 0%;display:block">`),
+    "a scrolled container clips its content": `<div id="root" style="width:160px;height:96px;overflow:auto;scrollbar-width:none;background:rgb(255, 255, 255)"><div style="height:300px;margin:0 20px;background:linear-gradient(rgb(255, 0, 0), rgb(0, 0, 255))"></div></div>`,
+    "a circle drawn with a percentage radius": `<div id="root" style="width:96px;height:96px;border-radius:50%;background:rgb(0, 120, 255)"></div>`,
+    "a dashed SVG stroke": `<svg id="root" width="160" height="96" viewBox="0 0 80 48" style="display:block;background:rgb(255, 255, 255)"><path d="M4 24 H76" stroke="rgb(200, 30, 30)" stroke-width="4" stroke-dasharray="6 3"/></svg>`,
+    "content inside an open shadow root and its slot": box("background:rgb(255, 255, 255)", `<x-card style="display:block;width:160px;height:96px"><span style="display:block;width:40px;height:40px;background:rgb(30, 160, 90)"></span></x-card>`),
+    "a same-origin frame": box("background:rgb(255, 255, 255)", `<iframe srcdoc="<body style='margin:0;background:rgb(250, 240, 200)'><div style='margin:10px;width:60px;height:30px;background:rgb(200, 40, 40)'></div></body>" style="display:block;width:140px;height:76px;margin:6px;border:4px solid rgb(40, 40, 40)"></iframe>`),
+    "a sprite drawn through <use>": `<svg style="display:none"><symbol id="mark" viewBox="0 0 24 24"><path d="M2 2 H22 V12 H2 Z" fill="currentColor"/><circle cx="12" cy="18" r="4" fill="rgb(255, 160, 0)"/></symbol></svg>`
+      + box("background:rgb(255, 255, 255);color:rgb(40, 90, 220)", `<svg width="96" height="96" style="display:block;margin-left:32px"><use href="#mark"/></svg>`),
+    "SVG shapes inside turned and moved groups": box("background:rgb(255, 255, 255)", `<svg width="160" height="96" viewBox="0 0 80 48" style="display:block"><g transform="translate(10 4)"><path d="M0 0 H20 V10 H0 Z" fill="rgb(0, 140, 200)"/></g><g transform="rotate(30 55 24)"><rect x="45" y="18" width="20" height="12" fill="rgb(220, 60, 60)"/></g></svg>`),
+    "an SVG line from bottom left to top right": box("background:rgb(255, 255, 255)", `<svg width="160" height="96" style="display:block"><line x1="10" y1="86" x2="150" y2="10" stroke="rgb(20, 20, 20)" stroke-width="6"/></svg>`),
+    "an SVG gradient defined outside the selection": `<svg width="0" height="0" style="position:absolute"><defs><linearGradient id="sky"><stop offset="0" stop-color="rgb(255, 120, 0)"/><stop offset="1" stop-color="rgb(80, 0, 200)"/></linearGradient></defs></svg>`
+      + box("", `<svg width="160" height="96" style="display:block"><rect width="160" height="96" fill="url(#sky)"/></svg>`),
+    "positioned pseudo-elements": `<style>#root{position:relative}#root::before{content:"";position:absolute;inset:12px 20px auto auto;width:40px;height:30px;padding:2px;border:2px solid rgb(0, 0, 200);background:rgb(240, 60, 60)}#root::after{content:"";position:absolute;left:50%;top:50%;transform:translate(-50%, -50%);width:30px;height:30px;border-radius:50%;background:linear-gradient(rgb(0, 180, 90), rgb(0, 90, 180))}</style>`
+      + box("background:rgb(255, 255, 255);border:3px solid rgb(30, 30, 30);box-sizing:border-box"),
+    "a gradient anchored to the content box repeats over the padding": box("padding:20px;box-sizing:border-box;background:linear-gradient(rgb(255, 0, 0), rgb(0, 0, 255)) content-box border-box"),
+    "an image at its natural size": box("background:rgb(255, 255, 255)", `<img src="${QUADRANTS}" style="width:160px;height:96px;object-fit:none;object-position:right 20px top 10px;display:block">`),
+  };
+  for (const [name, html] of Object.entries(cases)) {
+    test(name, async () => {
+      const {difference} = await fidelity(html.includes("<x-card") ? `<script>customElements.define("x-card", class extends HTMLElement { constructor() { super(); this.attachShadow({mode:"open"}).innerHTML = '<div style="position:absolute;margin:20px 0 0 60px;width:80px;height:50px;background:rgb(240, 90, 30)"></div><div style="padding:8px"><slot></slot></div>'; } });</script>${html}` : html, name.startsWith("a scrolled") ? () => { document.querySelector("#root").scrollTop = 120; } : undefined);
+      expect(difference).toBeLessThan(THRESHOLD);
+    });
+  }
+});

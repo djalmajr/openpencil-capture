@@ -10,9 +10,15 @@ const childServer = Bun.serve({
   fetch() {
     return new Response(`<!doctype html><html><body style="margin:40px;font:16px sans-serif">
       <article id="payout" style="width:420px;padding:24px;border:1px solid #d6d3d1;border-radius:12px">
-        <h2 style="margin:0 0 8px">Payout Threshold</h2>
+        <h2 style="margin:0 0 8px">Payout Threshold <svg width="16" height="16" viewBox="0 0 16 16"><circle cx="8" cy="8" r="6" fill="currentColor"/></svg></h2>
         <p style="margin:0">Set the minimum balance required before a payout is triggered.</p>
+        <closed-note></closed-note>
       </article>
+      <script>
+        customElements.define("closed-note", class extends HTMLElement {
+          constructor() { super(); this.attachShadow({mode:"closed"}).innerHTML = "<p style='margin:8px 0 0'>Inside a closed shadow root</p>"; }
+        });
+      </script>
     </body></html>`, {headers:{"content-type":"text/html"}});
   },
 });
@@ -49,12 +55,17 @@ try {
   const frame = page.frames().find((candidate) => candidate.url().startsWith(childOrigin));
   if (!frame) throw new Error("Could not find the extension iframe fixture");
 
-  await serviceWorker.evaluate(async () => {
+  const clickToolbarButton = () => serviceWorker.evaluate(async () => {
     const [tab] = await chrome.tabs.query({active:true, currentWindow:true});
     if (!tab?.id) throw new Error("Could not resolve the active test tab");
-    const target = {tabId:tab.id, allFrames:true};
-    await chrome.scripting.executeScript({target, files:["content.js"]});
+    await globalThis.openPencilToggleCapture(tab.id);
   });
+  const pickerViews = () => Promise.all(page.frames().map((candidate) => candidate.evaluate(() => {
+    const host = document.getElementById("__openpencil_capture_host__");
+    if (!host) return "closed";
+    return ["selection", "capturing", "success"].find((name) => !host.shadowRoot.querySelector(`.${name}-view`).hidden);
+  })));
+  await clickToolbarButton();
 
   // A hostile page tries every channel an earlier design exposed to page scripts.
   const pageChannels = await page.evaluate(async (url) => {
@@ -93,8 +104,10 @@ try {
 
   const target = frame.locator("#payout");
   await frame.locator("#__openpencil_capture_host__").waitFor({state:"attached"});
-  await target.hover({position:{x:40, y:40}});
-  await target.click({position:{x:40, y:40}});
+  // The card's own padding, below the toolbar, so the whole card is the selection.
+  const bounds = await target.boundingBox();
+  await page.mouse.move(bounds.x + 10, bounds.y + bounds.height - 10);
+  await page.mouse.click(bounds.x + 10, bounds.y + bounds.height - 10);
   try {
     await frame.waitForFunction(() => {
       const host = document.getElementById("__openpencil_capture_host__");
@@ -111,11 +124,40 @@ try {
 
   const plain = await page.evaluate(() => navigator.clipboard.readText());
   const payload = parseOpenPencilClipboard(plain);
-  const clipboard = {marker:Boolean(payload), name:payload?.nodes[0]?.name};
+  const texts = [];
+  const collect = (node) => { if (node.type === "TEXT") texts.push(node.text); node.children?.forEach(collect); };
+  payload?.nodes.forEach(collect);
+  const clipboard = {marker:Boolean(payload), name:payload?.nodes[0]?.name, closedShadow:texts.includes("Inside a closed shadow root")};
   if (!clipboard.marker || !clipboard.name?.includes("Payout Threshold")) {
     throw new Error(`Loaded extension did not copy the iframe selection: ${JSON.stringify(clipboard)}`);
   }
-  console.log(JSON.stringify({loadedExtension:true, crossOrigin:true, clipboard}));
+  const outline = (node, depth = 0) => [`${" ".repeat(depth)}${node.type} ${node.name} ${node.text ?? ""}`, ...(node.children || []).flatMap((child) => outline(child, depth + 1))];
+  if (!clipboard.closedShadow) throw new Error(`The capture left out a closed shadow root:\n${payload.nodes.flatMap((node) => outline(node)).join("\n")}`);
+  // Esc in a frame closes the picker in every frame, and the button opens them again.
+  await clickToolbarButton();
+  await page.mouse.move(bounds.x + 10, bounds.y + bounds.height - 10);
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(300);
+  const escaped = await pickerViews();
+  if (escaped.some((view) => view !== "closed")) throw new Error(`Esc left pickers open: ${JSON.stringify(escaped)}`);
+
+  // Clicking the button while one frame shows its success message starts over in every frame.
+  await clickToolbarButton();
+  const reopened = await pickerViews();
+  if (reopened.some((view) => view !== "selection")) throw new Error(`The button left frames out of sync: ${JSON.stringify(reopened)}`);
+
+  // Regression: during the top frame's success message, a click closed the top picker and opened
+  // invisible ones in the iframes.
+  await page.mouse.move(1000, 650);
+  await page.mouse.click(1000, 650);
+  await page.waitForFunction(() => {
+    const host = document.getElementById("__openpencil_capture_host__");
+    return host && !host.shadowRoot.querySelector(".success-view").hidden;
+  }, null, {timeout:30_000});
+  await clickToolbarButton();
+  const closed = await pickerViews();
+  if (closed.some((view) => view !== "closed")) throw new Error(`The button left pickers open: ${JSON.stringify(closed)}`);
+  console.log(JSON.stringify({loadedExtension:true, crossOrigin:true, clipboard, escaped, reopened, closed}));
 } finally {
   await context?.close();
   topServer.stop(true);

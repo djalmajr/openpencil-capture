@@ -3,6 +3,12 @@ import { convertCaptureToTree, cssBackgroundToFill, cssColorToHex } from "../src
 
 const rootStyles = { backgroundColor:"oklch(1 0 0)", borderTopColor:"oklch(0.93 0.007 106.5)", borderTopLeftRadius:"8px", borderTopRightRadius:"8px", borderBottomRightRadius:"8px", borderBottomLeftRadius:"8px", opacity:"1" };
 
+// A capture of `elements`, the first one the root; each is [path, tag, rect, styles, fields].
+const ir = (...elements) => ({format:"openpencil-capture-ir", version:1, rootPath:"0", label:"Fixture", source:{url:"https://example.test/"}, nodes:elements.map(([path, tag, rect, styles = {}, fields = {}]) => ({
+  path, parentPath:path.includes(".") ? path.slice(0, path.lastIndexOf(".")) : null, tag, name:tag, text:null, textRuns:[],
+  rect:{x:rect[0], y:rect[1], width:rect[2], height:rect[3]}, attributes:{}, ...fields, styles:{...rootStyles, ...styles},
+}))});
+
 describe("cssColorToHex", () => {
   test("converts shadcn OKLCH and transparent colors", () => {
     expect(cssColorToHex("oklch(1 0 0)")).toBe("#FFFFFF");
@@ -12,9 +18,55 @@ describe("cssColorToHex", () => {
     expect(cssColorToHex("lab(66.9756 -58.27 19.5419)")).toBe("#00BC7D");
     expect(cssColorToHex("lab(76.3898 14.5258 98.4589)")).toBe("#F0B100");
   });
+
+  test("reads a shadow painted in a color() space", () => {
+    const tree = convertCaptureToTree(ir(["0", "div", [0, 0, 100, 50], {boxShadow:"color(srgb 1 0 0) 0px 4px 8px 0px"}]));
+    expect(tree.root.effect).toMatchObject({shadowType:"outer", color:"#FF0000", blur:8});
+  });
 });
 
 describe("convertCaptureToTree", () => {
+  test("turns CSS filters into effects and layer opacity", () => {
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 80, 40], {filter:"blur(4px) drop-shadow(rgb(0, 0, 0) 2px 3px 6px) opacity(0.5)", backdropFilter:"blur(12px) saturate(1.5)", opacity:"0.8"}]));
+    expect(root.effect).toEqual([
+      {type:"blur", kind:"layer", sigma:4},
+      {type:"shadow", shadowType:"outer", offset:{x:2, y:3}, blur:6, spread:0, color:"#000000"},
+      {type:"blur", kind:"background", sigma:12},
+    ]);
+    expect(root.opacity).toBe(0.4);
+  });
+
+  test("bakes an image's color filters into its pixels and keeps grayscale editable", () => {
+    const tree = convertCaptureToTree(ir(["0", "div", [0, 0, 80, 40]], ["0.0", "img", [0, 0, 80, 40], {filter:"sepia(0.8) grayscale(1)"}, {attributes:{currentSrc:"https://example.test/a.png", effectiveFilter:"sepia(0.8) grayscale(1)"}}]));
+    const image = tree.root.children[0];
+    expect(image.children[0].fill).toMatchObject({type:"image", filter:"sepia(0.8)"});
+    expect(image.children[1].name).toContain("Grayscale");
+  });
+
+  test("resolves percentage and elliptical radii against the box", () => {
+    const radius = (value, width = 80, height = 40) => convertCaptureToTree(ir(["0", "div", [0, 0, width, height], {
+      borderTopLeftRadius:value, borderTopRightRadius:value, borderBottomRightRadius:value, borderBottomLeftRadius:value,
+    }])).root.cornerRadius;
+    expect(radius("50%")).toBe(20);
+    expect(radius("10px 25%")).toBe(10);
+    expect(radius("25% 40%", 100, 100)).toBe(25);
+  });
+
+  // CSS shrinks every corner by the factor that stops the largest pair overlapping.
+  test("shrinks radii that would overlap, as CSS does", () => {
+    const pill = convertCaptureToTree(ir(["0", "div", [0, 0, 120, 40], {borderTopLeftRadius:"9999px", borderTopRightRadius:"9999px", borderBottomRightRadius:"9999px", borderBottomLeftRadius:"9999px"}]));
+    expect(pill.root.cornerRadius).toBe(20);
+    const tab = convertCaptureToTree(ir(["0", "div", [0, 0, 100, 40], {borderTopLeftRadius:"60px", borderTopRightRadius:"60px", borderBottomRightRadius:"0px", borderBottomLeftRadius:"0px"}]));
+    expect(tab.root.cornerRadius).toEqual([40, 40, 0, 0]);
+  });
+
+  test("clips scrolling containers like hidden ones", () => {
+    const clip = (styles) => convertCaptureToTree(ir(["0", "div", [0, 0, 80, 40]], ["0.0", "div", [0, 0, 80, 40], styles])).root.children[0].clip;
+    expect(clip({overflowX:"auto", overflowY:"auto"})).toBe(true);
+    expect(clip({overflow:"visible scroll"})).toBe(true);
+    expect(clip({overflowX:"visible", overflowY:"visible"})).toBeUndefined();
+  });
+
   test("preserves intentional clipping on the captured root", () => {
     const capture = {format:"openpencil-capture-ir",version:1,rootPath:"0",label:"Clipped shell",source:{},nodes:[
       {path:"0",parentPath:null,tag:"div",name:"root",text:null,rect:{x:0,y:0,width:320,height:200},attributes:{},styles:{...rootStyles,overflow:"hidden"}},
@@ -111,6 +163,22 @@ describe("convertCaptureToTree", () => {
     const circle = convertCaptureToTree(capture).root.children[0].children[0];
     expect(circle).toMatchObject({type:"path",fill:"#00000000",strokeWidth:1.92,opacity:0.2,viewBox:[0,0,13.6,13.6]});
     expect(circle.geometry).toMatch(/^M 13\.6 6\.8 A 6\.8 6\.8 0 1 1 /);
+  });
+
+  test("keeps a dashed circle dashed instead of reading it as progress", () => {
+    const styles = {...rootStyles, backgroundColor:"transparent", fill:"none", stroke:"rgb(0, 0, 0)", strokeWidth:"2px", strokeDasharray:"6px, 4px", strokeLinecap:"butt"};
+    const circle = convertCaptureToTree(ir(["0", "div", [0, 0, 40, 40]], ["0.0", "svg", [0, 0, 40, 40], styles, {namespace:"http://www.w3.org/2000/svg", attributes:{viewBox:"0 0 40 40"}}],
+      ["0.0.0", "circle", [2, 2, 36, 36], styles, {namespace:"http://www.w3.org/2000/svg", attributes:{cx:"20", cy:"20", r:"18"}}])).root.children[0].children[0];
+    expect(circle).toMatchObject({type:"ellipse", dashPattern:[6, 4], strokeLinecap:"butt"});
+  });
+
+  test("dashes and dots borders the way Chromium draws them", () => {
+    const border = (style, width) => convertCaptureToTree(ir(["0", "div", [0, 0, 80, 40], Object.fromEntries(["Top", "Right", "Bottom", "Left"].flatMap((side) => [[`border${side}Width`, `${width}px`], [`border${side}Style`, style], [`border${side}Color`, "rgb(0, 0, 0)"]]))])).root;
+    expect(border("dashed", 2).dashPattern).toEqual([6, 4]);
+    expect(border("dashed", 4).dashPattern).toEqual([8, 4]);
+    expect(border("dotted", 2).dashPattern).toEqual([2, 2]);
+    expect(border("solid", 2).dashPattern).toBeUndefined();
+    expect(border("hidden", 2).stroke).toBeUndefined();
   });
 
   test("turns shadcn shadow rings into editable card strokes", () => {
@@ -333,6 +401,8 @@ describe("convertCaptureToTree", () => {
       {path:"0",parentPath:null,tag:"input",name:"root",text:null,rect:{x:0,y:0,width:200,height:36},attributes:{type:"password",value:"old-secret"},styles:{...rootStyles,color:"rgb(0, 0, 0)",fontSize:"14px",lineHeight:"20px"}},
     ]};
     expect(JSON.stringify(convertCaptureToTree(capture))).not.toContain("old-secret");
+    capture.nodes[0].attributes.type = "PASSWORD";
+    expect(JSON.stringify(convertCaptureToTree(capture))).not.toContain("old-secret");
   });
 
   // Regression: a hidden root crashed with "Cannot set properties of null".
@@ -348,7 +418,36 @@ describe("convertCaptureToTree", () => {
     const fill = cssBackgroundToFill({rect:{width:10,height:10},attributes:{},styles:{backgroundImage:"linear-gradient(90deg, rgb(0, 0, 0), rgba(0, 0, 0, 0))"}});
     expect(fill.colors.map((stop) => stop.color)).toEqual(["#000000","#00000000"]);
     const modern = cssBackgroundToFill({rect:{width:10,height:10},attributes:{},styles:{backgroundImage:"linear-gradient(90deg, rgb(10 20 30 / 0), rgb(10 20 30 / 0.5))"}});
-    expect(modern.colors.map((stop) => stop.color)).toEqual(["#00000000","#0A141E80"]);
+    expect(modern.colors.map((stop) => stop.color)).toEqual(["#0A141E00","#0A141E80"]);
+  });
+
+  // Regression: Tailwind's `to-blue-500/0` computes to `oklab(0 0 0 / 0)`, which dropped the stop and
+  // with it the whole gradient.
+  test("keeps a transparent stop written in a modern color space", () => {
+    const fill = cssBackgroundToFill({rect:{width:10,height:10},attributes:{},styles:{backgroundImage:"linear-gradient(to right, oklch(0.623 0.214 259.815) 0%, oklab(0 0 0 / 0) 100%)"}});
+    expect(fill.gradientType).toBe("linear");
+    expect(fill.colors.at(-1).color).toMatch(/00$/);
+  });
+
+  // Regression: the default origin (padding box) inside a border made every bordered gradient a tile.
+  test("keeps a bordered gradient a native gradient", () => {
+    const sides = Object.fromEntries(["Top", "Right", "Bottom", "Left"].flatMap((side) => [[`border${side}Width`, "1px"], [`border${side}Style`, "solid"], [`border${side}Color`, "rgb(200, 200, 200)"]]));
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 300, 100], {...sides, backgroundColor:"rgba(0, 0, 0, 0)", backgroundImage:"linear-gradient(90deg, rgb(255, 0, 0), rgb(0, 0, 255))", backgroundRepeat:"repeat", backgroundOrigin:"padding-box", backgroundClip:"border-box", backgroundSize:"auto", backgroundPositionX:"0%", backgroundPositionY:"0%"}]));
+    expect(root.fill).toMatchObject({type:"gradient", gradientType:"linear"});
+  });
+
+  test("places a userSpaceOnUse radial gradient against the shape's own box", () => {
+    const svgNs = {namespace:"http://www.w3.org/2000/svg"};
+    const tree = convertCaptureToTree(ir(
+      ["0", "div", [0, 0, 48, 48]],
+      ["0.0", "svg", [0, 0, 48, 48], {}, {...svgNs, attributes:{viewBox:"0 0 24 24"}}],
+      ["0.0.0", "radialgradient", [0, 0, 0, 0], {}, {...svgNs, attributes:{id:"glow", gradientUnits:"userSpaceOnUse", cx:"12", cy:"6", r:"6"}}],
+      ["0.0.0.0", "stop", [0, 0, 0, 0], {stopColor:"rgb(255, 255, 255)"}, {...svgNs, attributes:{offset:"0"}}],
+      ["0.0.0.1", "stop", [0, 0, 0, 0], {stopColor:"rgb(0, 0, 0)"}, {...svgNs, attributes:{offset:"1"}}],
+      ["0.0.1", "rect", [0, 0, 48, 24], {fill:"url(\"#glow\")", opacity:"1"}, {...svgNs, attributes:{width:"24", height:"12"}}],
+    ));
+    const rect = tree.root.children[0].children.find((child) => child.type === "rectangle");
+    expect(rect.fill).toMatchObject({gradientType:"radial", center:{x:0.5, y:0.5}, radius:{x:0.25, y:0.5}});
   });
 
   // Mutation captured: measuring from the box center puts every stripe out of phase with the browser.

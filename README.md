@@ -37,18 +37,30 @@ During serialization the toolbar collapses to `Capturing selection…` or `Captu
 | Source | OpenPencil layer |
 | --- | --- |
 | HTML element | `FRAME` with absolute children, keeping the DOM hierarchy |
+| Positioned `::before`, `::after` | `FRAME` named `Before · Decoration`, `After · Decoration` |
 | Unpainted SVG wrapper | `GROUP` fitted to its children |
-| Text | `TEXT`, one layer per visual line, with visible truncation kept as `...` |
+| Text | `TEXT`, one layer per visual line, with visible truncation kept as `...`, preformatted spaces, and the font family the browser drew with |
+| `<a href>` | Text hyperlink to the absolute target, for `http(s)`, `mailto` and `tel` |
 | `path`, `line`, `polyline`, `polygon`, partial circle | `VECTOR` with an editable vector network |
-| `rect`, `circle`, `ellipse` | `RECTANGLE`, `ELLIPSE` |
-| Color, including `oklch`, `oklab`, `lab` | Solid fill |
-| CSS and SVG linear gradient | Native linear gradient; transparent gradients layer over the background color |
+| `rect`, `circle`, `ellipse` | `RECTANGLE`, `ELLIPSE`; a turned one becomes a `VECTOR` |
+| SVG `transform` | Applied to the vector network |
+| `<use>` of a `<symbol>` or graphic in the page | The referenced graphics, with the styles and `currentColor` they inherit from the `<use>` |
+| Shadow roots, open and (in the extension) closed, and slots | Their rendered content, in place |
+| Same-origin `<iframe>` | Its document, clipped to the frame, over the canvas background |
+| Color, including `oklch`, `oklab`, `lab`, `lch` and `color()` spaces | Solid fill |
+| CSS linear, radial and conic gradient, SVG linear gradient | Native linear, radial or angular gradient |
+| Layered `background` | One fill per layer over the background color; a layer that paints only part of the box, and every layer above it, becomes a rectangle of its own |
+| `background-size`, `background-position`, `background-repeat` | Image placed, cropped or tiled where the page shows it |
+| Gradient tiled by `background-size` (dot grids, checkerboards) | Repeating image of one tile, drawn at twice its size |
 | `repeating-linear-gradient` with sharp stops | Clipped vector stripes |
-| `<img>`, CSS `url()` background, `<canvas>` | Image fill with the bytes embedded |
+| `background-clip:text` | The background as the text's fill |
+| `<img>`, CSS `url()` background, `<canvas>` | Image fill with the bytes embedded, placed by `object-fit` and `object-position` |
 | SVG, AVIF and other images CanvasKit cannot decode | Image fill rasterized at twice the displayed size |
-| `grayscale()`, `brightness()` | Editable overlay layers above the image |
+| `grayscale()`, `brightness()` on an image | Editable overlay layers above the image |
+| Other color filters on an image | Baked into its pixels |
+| `filter: blur()`, `drop-shadow()`, `opacity()`; `backdrop-filter: blur()` | Layer blur, drop shadow, layer opacity; background blur |
 | `mix-blend-mode` | Fill blend mode |
-| `box-shadow`, border, per-side border, radius | Effects, strokes and corners |
+| `box-shadow`, border, per-side border, radius | Effects, strokes and corners; dashed and dotted borders and SVG `stroke-dasharray` keep their dashes |
 
 Before serializing, the extension waits for SVG geometry to stabilize so animated charts are not copied mid-transition.
 
@@ -56,25 +68,19 @@ Images and canvas pixels travel inside the clipboard, so pasting needs no networ
 
 ### Sensitive values
 
-Values the page masks paste as bullets, both `type=password` fields and anything using `-webkit-text-security`. Values of `type=hidden` fields and of controls under `display:none` or `visibility:hidden` are never read.
+Values the page masks paste as bullets, both `type=password` fields and anything using `-webkit-text-security`. Nothing the page does not render is read: content under `display:none`, `opacity:0` or `content-visibility:hidden` (`hidden=until-found`), everything in a closed `<details>` but its summary, text under `visibility:hidden`, a hidden frame, `type=hidden` fields, and text or control values moved off the page or clipped out of sight, character by character, by an `overflow` box inside the selection.
 
 ### Known limitations
 
 Limits of the capture model:
 
 - Layout is absolute; Auto Layout is not inferred.
-- Pseudo-elements, masks and `transform` on SVG elements are not captured.
-- `object-position` and a background color on the `<img>` itself are ignored.
-- Filters other than `grayscale()` and `brightness()` are dropped. So are link targets; the underline stays.
-- A diagonal SVG `<line>` is always drawn from top-left to bottom-right.
-- Text uses the first family in `font-family`, even if the browser fell back to a later one, so its metrics can differ.
-- Open shadow roots, SVG `<use>` sprites and iframe content in a whole-page capture come out empty.
-- Radial and conic gradients are dropped, and `to <side>` linear gradients render top to bottom. In a layered background, only the first image or gradient survives.
-- A percentage `border-radius` is read as pixels, and `overflow:auto` or `scroll` containers do not clip.
-- Colors outside `rgb`, `oklch`, `oklab` and `lab` are dropped, and transparent text becomes black.
-- `background-repeat`, `background-size` lengths, dashed strokes and `<pre>` whitespace are not preserved.
-- Some content the page does not show is still captured, unless it is masked: a text input moved off-screen or clipped with CSS, and collapsed content such as a closed `<details>`, `content-visibility:hidden` or `hidden=until-found`. A control under `opacity:0` keeps its value in `*.capture.json` only.
-- Clicking the toolbar icon during the success message can leave iframes in selection mode. Press `Esc` to stop them.
+- Inline pseudo-elements (`::before` icons and bullets in the text flow), `::marker` and masks are not captured. A positioned pseudo-element is, with its quoted text and the translation of its transform, not a rotation or scale.
+- Color filters (`sepia()`, `invert()`, `saturate()`, `hue-rotate()`, `contrast()`) are baked into images, and only by the extension: the CLI keeps the image unfiltered. On other elements they are dropped, and so are `filter:url()` and other `backdrop-filter` functions than `blur()`.
+- A cross-origin iframe comes out empty when the page around it is captured; capture inside the frame to get its content. So does a `<use>` that references another file.
+- A gradient that blends outside sRGB (`in oklab`, `oklch` stops) or through a color hint gets stops in between, so it is close but no longer has only the stops written. `lab`, `lch`, `hsl` and `hwb` blend as `oklab`, `oklch` and sRGB. `background-repeat:space` repeats without spacing.
+- An elliptical corner (`border-radius:50%` on a box that is not square, `10px 20px`) becomes circular, with the smaller radius.
+- A dashed or dotted border keeps Chromium's dash lengths, but the editor starts the dashes at a corner rather than centering them on each side, and draws dots square.
 
 When a resource cannot be read, or the clipboard is misused:
 

@@ -88,6 +88,14 @@ describe("the pasted design looks like the page", () => {
     "an ellipse clip path": box("background:rgb(20, 160, 120);clip-path:ellipse(50% 30% at 40% 50%)"),
     "a path() clip path": box("background:rgb(80, 60, 200);clip-path:path('M0 0 L160 0 L80 90 Z')"),
     "a clip path over content that overflows": box("background:rgb(255, 255, 255);clip-path:inset(8px)", `<div style="width:220px;height:40px;background:rgb(200, 30, 30)"></div>`),
+    "a clip path from an SVG clipPath in bounding-box units": `<svg width="0" height="0" style="position:absolute"><clipPath id="tri" clipPathUnits="objectBoundingBox"><path d="M0.5 0 L1 1 L0 1 Z"/><circle cx="0.15" cy="0.2" r="0.12"/></clipPath></svg>`
+      + box("background:rgb(230, 120, 20);clip-path:url(#tri)"),
+    "a clip path from an SVG clipPath in user space, turned": `<svg width="0" height="0" style="position:absolute"><clipPath id="bar"><rect x="20" y="30" width="120" height="30" transform="rotate(10 80 45)"/></clipPath></svg>`
+      + box("background:rgb(40, 100, 200);clip-path:url(#bar)"),
+    "a clipped group inside an SVG": box("background:rgb(255, 255, 255)", `<svg width="160" height="96" viewBox="0 0 80 48" style="display:block"><defs><clipPath id="half"><rect x="0" y="0" width="30" height="20"/></clipPath></defs><g transform="translate(10 6)" clip-path="url(#half)"><circle cx="20" cy="18" r="16" fill="rgb(200, 30, 120)"/></g><rect x="50" y="10" width="24" height="24" fill="rgb(30, 160, 90)" clip-path="url(#half)"/></svg>`),
+    "a mask from an SVG mask element with a gradient": `<svg width="0" height="0" style="position:absolute"><defs><linearGradient id="fade"><stop offset="0" stop-color="white"/><stop offset="1" stop-color="black"/></linearGradient></defs><mask id="soft" maskContentUnits="objectBoundingBox"><rect width="1" height="1" fill="url(#fade)"/><circle cx="0.8" cy="0.5" r="0.15" fill="white"/></mask></svg>`
+      + box("background:rgb(200, 30, 60);mask:url(#soft)"),
+    "a masked shape inside an SVG": box("background:rgb(255, 255, 255)", `<svg width="160" height="96" viewBox="0 0 80 48" style="display:block"><mask id="hole"><rect width="80" height="48" fill="white"/><circle cx="40" cy="24" r="10" fill="black"/></mask><g transform="translate(4 2)"><rect x="10" y="4" width="60" height="38" fill="rgb(30, 120, 220)" mask="url(#hole)"/></g></svg>`),
     "a gradient mask": box("background:rgb(30, 90, 220);mask-image:linear-gradient(90deg, rgb(0, 0, 0), transparent)"),
     "a repeated radial mask": box("background:rgb(200, 40, 40);mask:radial-gradient(circle, rgb(0, 0, 0) 6px, transparent 6px) 0 0 / 20px 20px"),
     "an image at its natural size": box("background:rgb(255, 255, 255)", `<img src="${QUADRANTS}" style="width:160px;height:96px;object-fit:none;object-position:right 20px top 10px;display:block">`),

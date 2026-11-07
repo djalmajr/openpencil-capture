@@ -1,6 +1,6 @@
 import { cssBackgroundLayers, cssImageUrl, placeImage, resolveLength } from "./css-background.mjs";
 import { colorWithCombinedOpacity, colorWithOpacity, gradientColor, safeColor } from "./css-color.mjs";
-import { pathBounds } from "./scene-nodes.mjs";
+import { pathBounds, transformPath } from "./scene-nodes.mjs";
 import { clipPathGeometry, colorFilterFunctions, filterHex, filterTree, maskLayerStyles } from "./css-effects.mjs";
 import { clamp, px, round, splitCssArguments } from "./css-values.mjs";
 
@@ -48,52 +48,95 @@ function backgroundLayers(node, capture) {
   });
 }
 
-// A mask-image url() naming a <mask> element of the page draws nothing the editor can load.
-function referencesDocument(url, pageUrl) {
-  if (!url || url.startsWith("#")) return true;
+// The id a `url()` names when it points into the page itself (`url(#m)`, or the page's own
+// address with a fragment), or null for any other value.
+function documentReference(value, pageUrl) {
+  const raw = String(value || "").match(/^url\(["']?([^"')]+)["']?\)$/)?.[1];
+  if (!raw) return null;
+  if (raw.startsWith("#")) return raw.slice(1) || null;
   try {
-    const target = new URL(url, pageUrl || undefined);
+    const target = new URL(raw, pageUrl || undefined);
     const page = new URL(pageUrl || target.href);
-    return Boolean(target.hash) && target.href.slice(0, -target.hash.length) === page.href.replace(/#.*$/, "");
+    return target.hash && target.href.slice(0, -target.hash.length) === page.href.replace(/#.*$/, "") ? target.hash.slice(1) : null;
   } catch {
-    return true;
+    return null;
   }
 }
 
-function maskedGroup(layer, mask) {
+function maskedGroup(layer, mask, inPlace = false) {
+  if (inPlace) return {type:"group", name:layer.name, layoutPosition:"absolute", x:0, y:0, children:[mask, layer]};
   return {type:"group", name:layer.name, layoutPosition:"absolute", x:layer.x, y:layer.y, children:[mask, {...layer, x:0, y:0}]};
 }
 
+const IDENTITY = [1, 0, 0, 1, 0, 0];
+
+const multiply = ([a1, b1, c1, d1, e1, f1], [a2, b2, c2, d2, e2, f2]) => [
+  a1 * a2 + c1 * b2, b1 * a2 + d1 * b2, a1 * c2 + c1 * d2, b1 * c2 + d1 * d2, a1 * e2 + c1 * f2 + e1, b1 * e2 + d1 * f2 + f1,
+];
+
+// The shapes of a <clipPath> or <mask>, each as an outline in the space `matrix` maps them into;
+// in `objectBoundingBox` units the box is the unit square.
+function resourceOutlines(resource, unitsAttribute, matrix, box) {
+  const boxUnits = resource.node.attributes[unitsAttribute] === "objectBoundingBox";
+  if (boxUnits && !(box.width > 0 && box.height > 0)) return null;
+  const units = boxUnits ? [box.width, 0, 0, box.height, box.x, box.y] : IDENTITY;
+  return resource.shapes.map((shape) => {
+    const geometry = primitivePath(shape, boxUnits ? [0, 0, 1, 1] : [0, 0, box.width, box.height]);
+    if (!geometry) return null;
+    const rule = shape.attributes["clip-rule"] || shape.styles.fillRule;
+    return {shape, geometry:transformPath(geometry, multiply(multiply(matrix, units), shape.attributes.localTransform || IDENTITY), rule)};
+  }).filter(Boolean);
+}
+
 /**
- * `mask-image` and a `clip-path` shape, as the editor's masks: the layer goes into a group whose
- * first child masks it, an alpha (or luminance) frame of the mask's layers placed like
- * backgrounds, and a vector of the clip shape. Returns null when the clip shape is empty.
+ * `mask` and `clip-path`, as the editor's masks: the layer goes into a group whose first child
+ * masks it. A clip shape or <clipPath> becomes a vector; mask-image layers an alpha (or
+ * luminance) frame placed like backgrounds, and a <mask> a luminance frame of its shapes. Inside
+ * an SVG they are drawn in the element's user space, through the SVG's viewBox. Returns null when
+ * the clip leaves nothing.
  */
-function withCssMasks(node, layer, capture) {
-  if (!layer || node.namespace === "http://www.w3.org/2000/svg") return layer;
-  const width = round(node.rect.width);
-  const height = round(node.rect.height);
-  const geometry = clipPathGeometry(node.styles.clipPath, width, height);
+function withCssMasks(node, layer, capture, context) {
+  if (!layer) return layer;
+  const pageUrl = capture?.source?.url;
+  const inSvg = node.namespace === "http://www.w3.org/2000/svg" && node.tag !== "svg";
+  const svg = inSvg ? context.svgOf(node) : null;
+  if (inSvg && !svg) return layer;
+  const width = round(inSvg ? svg.rect.width : node.rect.width);
+  const height = round(inSvg ? svg.rect.height : node.rect.height);
+  const [bx = 0, by = 0, bw = 0, bh = 0] = node.attributes.bbox || [];
+  const space = inSvg
+    ? {matrix:node.attributes.transformMatrix || IDENTITY, box:{x:bx, y:by, width:bw, height:bh}, viewBox:(svg.attributes.viewBox || `0 0 ${svg.rect.width} ${svg.rect.height}`).split(/[\s,]+/).map(Number)}
+    : {matrix:IDENTITY, box:{x:0, y:0, width, height}, viewBox:[0, 0, width, height]};
+  const frame = {layoutPosition:"absolute", x:0, y:0, width, height};
+  const vector = (geometry) => ({type:"path", ...frame, geometry, viewBox:space.viewBox, ...(svg?.attributes.preserveAspectRatio === "none" ? {stretchViewBox:true} : {})});
+  const clipId = documentReference(node.styles.clipPath, pageUrl);
+  const clipOutlines = clipId && context.clipPaths.has(clipId) ? resourceOutlines(context.clipPaths.get(clipId), "clipPathUnits", space.matrix, space.box) : null;
+  const geometry = clipOutlines ? clipOutlines.map((outline) => outline.geometry).join(" ") : inSvg ? null : clipPathGeometry(node.styles.clipPath, width, height);
   if (geometry === "") return null;
   let result = layer;
   const images = splitCssArguments(node.styles.maskImage || "none").filter((value) => value && value !== "none");
-  const pageUrl = capture?.source?.url;
-  if (images.length && !images.some((value) => cssImageUrl(value) && referencesDocument(cssImageUrl(value), pageUrl))) {
+  const references = images.map((value) => documentReference(value, pageUrl));
+  const element = references.length === 1 && references[0] ? context.masks.get(references[0]) : null;
+  const outlines = element ? resourceOutlines(element, "maskContentUnits", space.matrix, space.box) : null;
+  if (outlines) {
+    result = maskedGroup(result, {
+      type:"frame", name:`${semanticLayerName(node)} · Mask`, layout:"none", ...frame, isMask:true,
+      maskType:element.node.styles.maskType === "alpha" ? "ALPHA" : "LUMINANCE",
+      children:outlines.map(({shape, geometry: outline}) => ({...vector(outline), name:semanticLayerName(shape), ...graphicPaint(shape, 1, context.paintServers), stroke:undefined})),
+    }, inSvg);
+  } else if (!inSvg && images.length && !references.some(Boolean)) {
     const layers = cssBackgroundLayers(maskLayerStyles(node.styles), width, height, {baseUrl:pageUrl, imageSizes:capture?.imageSizes, resolveUrl:assetUrl});
     result = maskedGroup(result, {
-      type:"frame", name:`${semanticLayerName(node)} · Mask`, layout:"none", layoutPosition:"absolute", x:0, y:0, width, height,
+      type:"frame", name:`${semanticLayerName(node)} · Mask`, layout:"none", ...frame,
       isMask:true, maskType:node.styles.maskMode === "luminance" ? "LUMINANCE" : "ALPHA",
       children:layers.map((mask, index) => ({type:"rectangle", name:`${semanticLayerName(node)} · Mask layer ${index + 1}`, layoutPosition:"absolute", ...(mask.region || {x:0, y:0, width, height}), fill:mask.fill})),
     });
   }
   if (geometry) {
-    result = maskedGroup(result, {
-      type:"path", name:`${semanticLayerName(node)} · Clip path`, layoutPosition:"absolute", x:0, y:0, width, height,
-      geometry, viewBox:[0, 0, width, height], fill:"#000000", isMask:true, maskType:"VECTOR",
-    });
+    result = maskedGroup(result, {...vector(geometry), name:`${semanticLayerName(node)} · Clip path`, fill:"#000000", isMask:true, maskType:"VECTOR"}, inSvg);
     // A shape reaching past the box would widen the group past the element; what it would show
     // there is only overflowing content, which the box then clips.
-    const bounds = pathBounds(geometry);
+    const bounds = inSvg ? null : pathBounds(geometry);
     if (bounds && (bounds.x < -0.5 || bounds.y < -0.5 || bounds.x + bounds.width > width + 0.5 || bounds.y + bounds.height > height + 0.5)) {
       result = {type:"frame", name:result.name, layout:"none", layoutPosition:"absolute", x:result.x, y:result.y, width, height, clip:true, children:[{...result, x:0, y:0}]};
     }
@@ -685,6 +728,8 @@ function svgPaintServers(capture, childPaths, byPath) {
   return servers;
 }
 
+const SVG_SHAPES = new Set(["path", "rect", "circle", "ellipse", "line", "polyline", "polygon"]);
+
 export function convertCaptureToTree(capture) {
   if (capture?.format !== "openpencil-capture-ir" || capture?.version !== 1) throw new Error("Unsupported capture format");
   const byPath = new Map(capture.nodes.map((node) => [node.path, node]));
@@ -696,6 +741,14 @@ export function convertCaptureToTree(capture) {
     childPaths.get(node.parentPath).push(node.path);
   }
   const paintServers = svgPaintServers(capture, childPaths, byPath);
+  const resources = (tag) => new Map(capture.nodes.filter((node) => node.tag === tag && node.attributes.id).map((node) => [node.attributes.id, {
+    node, shapes:(childPaths.get(node.path) || []).map((path) => byPath.get(path)).filter((shape) => SVG_SHAPES.has(shape.tag)),
+  }]));
+  const maskContext = {clipPaths:resources("clippath"), masks:resources("mask"), paintServers, svgOf:(node) => {
+    let svg = node;
+    while (svg && svg.tag !== "svg") svg = byPath.get(svg.parentPath);
+    return svg;
+  }};
   const stats = { frames:0, groups:0, texts:0, images:0, gradients:0, svgGraphics:0, controls:0, skipped:0, skippedSvgInvisible:0, skippedSvgUnsupported:0, skippedRoots:{} };
   const convertNode = (node, parent, clippedBackground = null) => {
     if (node.namespace === "http://www.w3.org/2000/svg" && ["defs", "clippath", "title", "desc"].includes(node.tag)) {
@@ -732,7 +785,7 @@ export function convertCaptureToTree(capture) {
         if (graphic.fill?.type === "gradient") stats.gradients += 1;
       }
       else stats.skippedSvgUnsupported += 1;
-      return applyColorFilter(node, graphic);
+      return withCssMasks(node, applyColorFilter(node, graphic), capture, maskContext);
     }
     if (node.tag === "img" || node.tag === "canvas") {
       const url = node.tag === "canvas"
@@ -751,9 +804,9 @@ export function convertCaptureToTree(capture) {
       if (node.tag === "img") {
         const image = filteredImageNode(node,parent,url);
         if (image) settled.add(image);
-        return withCssMasks(node, image, capture);
+        return withCssMasks(node, image, capture, maskContext);
       }
-      return withCssMasks(node, applyColorFilter(node, {type:"rectangle",name:semanticLayerName(node),layoutPosition:"absolute",...relativeRect(node,parent),fill:{type:"image",url,mode:"stretch"},cornerRadius:cornerRadius(node)}), capture);
+      return withCssMasks(node, applyColorFilter(node, {type:"rectangle",name:semanticLayerName(node),layoutPosition:"absolute",...relativeRect(node,parent),fill:{type:"image",url,mode:"stretch"},cornerRadius:cornerRadius(node)}), capture, maskContext);
     }
     // A frame shows its document's canvas background, which the element it came from no longer paints.
     const propagated = node.attributes.backgroundPropagated;
@@ -839,7 +892,7 @@ export function convertCaptureToTree(capture) {
       const child = convertNode(byPath.get(path), node, textBackground);
       if (child) frame.children.push(child);
     }
-    return withCssMasks(node, applyColorFilter(node, frame), capture);
+    return withCssMasks(node, applyColorFilter(node, frame), capture, maskContext);
   };
   const root = convertNode(rootSource, { rect:{ x:0, y:0 } });
   if (!root) throw new Error("The selected element is not visible");

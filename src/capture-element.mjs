@@ -17,7 +17,7 @@ export const CAPTURED_STYLE_KEYS = [
   "objectFit", "objectPosition", "filter", "backdropFilter", "mixBlendMode",
   "fill", "fillOpacity", "fillRule", "stroke", "strokeWidth", "strokeOpacity", "strokeDasharray", "strokeDashoffset", "strokeLinecap", "strokeLinejoin",
   "stopColor", "stopOpacity",
-  "clipPath", "maskImage", "maskSize", "maskPosition", "maskRepeat", "maskOrigin", "maskClip", "maskMode",
+  "clipPath", "maskImage", "maskSize", "maskPosition", "maskRepeat", "maskOrigin", "maskClip", "maskMode", "maskType",
 ];
 
 const CAPTURED_ATTRIBUTES = new Set([
@@ -25,7 +25,7 @@ const CAPTURED_ATTRIBUTES = new Set([
   "placeholder", "min", "max", "step",
   "d", "fill", "stroke", "x", "y", "x1", "y1", "x2", "y2", "width", "height",
   "cx", "cy", "r", "rx", "ry", "points", "viewBox", "preserveAspectRatio", "text-anchor",
-  "id", "offset", "stop-color", "stop-opacity", "gradientUnits", "gradientTransform", "fx", "fy",
+  "id", "offset", "stop-color", "stop-opacity", "gradientUnits", "gradientTransform", "fx", "fy", "clipPathUnits", "maskContentUnits", "clip-rule",
 ]);
 
 function nearestOpaqueBackground(node) {
@@ -448,6 +448,11 @@ export async function captureElement(root, options = {}) {
       attributes.placeholderColor = placeholder.color;
       attributes.placeholderOpacity = placeholder.opacity;
     }
+    // A clip path's shapes are drawn in the space of what they clip, through their own transform.
+    if (isSvg && inResources && SVG_GRAPHICS.has(tag)) {
+      const local = ownTransform(node);
+      if (!isIdentity(local)) attributes.localTransform = local.map((value) => Number(value.toFixed(6)));
+    }
     if (isSvg && !inResources) {
       const transform = svgTransform(node);
       if (transform) attributes.transformMatrix = transform;
@@ -591,17 +596,33 @@ export async function captureElement(root, options = {}) {
 
   const rootCanvas = {left:-view.scrollX, top:-view.scrollY, right:Infinity, bottom:Infinity};
   visit(root, "0", null, {inResources:false, offset:{x:0, y:0}, clip:rootCanvas, canvas:rootCanvas});
-  // A gradient referenced from inside the selection may be defined outside it, often in a sprite
-  // sheet at the top of the page.
-  const capturedIds = new Set(nodes.map((node) => node.attributes.id).filter(Boolean));
-  const references = new Set(nodes.flatMap((node) => [node.styles.fill, node.styles.stroke])
-    .map((value) => String(value || "").match(/^url\(["']?#([^"')]+)["']?\)$/)?.[1]).filter(Boolean));
-  const servers = Array.from(references).filter((id) => !capturedIds.has(id))
-    .map((id) => root.getRootNode().getElementById?.(id) || root.ownerDocument.getElementById(id))
-    .filter((element) => ["lineargradient", "radialgradient"].includes(element?.localName.toLowerCase()));
-  if (servers.length) {
-    nodes.push({path:"0.defs", parentPath:"0", tag:"defs", namespace:SVG_NAMESPACE, role:null, name:"defs", text:null, textRect:null, textRuns:[], rect:{x:0, y:0, width:0, height:0}, styles:{}, attributes:{}});
-    servers.forEach((server, index) => visit(server, `0.defs.${index}`, "0.defs", {inResources:true, offset:{x:0, y:0}, clip:rootCanvas, canvas:rootCanvas}));
+  // A gradient, clip path or mask referenced from inside the selection may be defined outside it,
+  // often in a sprite sheet at the top of the page; a mask's shapes can name gradients in turn.
+  const pageUrl = root.ownerDocument.URL.replace(/#.*$/, "");
+  const referenceId = (value) => {
+    const raw = String(value || "").match(/^url\(["']?([^"')]+)["']?\)$/)?.[1];
+    if (!raw) return null;
+    if (raw.startsWith("#")) return raw.slice(1);
+    try {
+      const url = new URL(raw, root.ownerDocument.baseURI);
+      return url.hash && url.href.slice(0, -url.hash.length) === pageUrl ? url.hash.slice(1) : null;
+    } catch {
+      return null;
+    }
+  };
+  const seen = new Set(nodes.map((node) => node.attributes.id).filter(Boolean));
+  let pending = nodes;
+  for (let pass = 0; pass < 3 && pending.length; pass += 1) {
+    const references = new Set(pending.flatMap((node) => [node.styles.fill, node.styles.stroke, node.styles.clipPath, ...String(node.styles.maskImage || "").split(/,(?![^(]*\))/)])
+      .map((value) => referenceId(String(value || "").trim())).filter((id) => id && !seen.has(id)));
+    const servers = Array.from(references, (id) => root.getRootNode().getElementById?.(id) || root.ownerDocument.getElementById(id))
+      .filter((element) => ["lineargradient", "radialgradient", "clippath", "mask"].includes(element?.localName.toLowerCase()));
+    references.forEach((id) => seen.add(id));
+    const before = nodes.length;
+    if (servers.length && !nodes.some((node) => node.path === "0.defs")) nodes.push({path:"0.defs", parentPath:"0", tag:"defs", namespace:SVG_NAMESPACE, role:null, name:"defs", text:null, textRect:null, textRuns:[], rect:{x:0, y:0, width:0, height:0}, styles:{}, attributes:{}});
+    const offset = nodes.filter((node) => node.parentPath === "0.defs").length;
+    servers.forEach((server, index) => visit(server, `0.defs.${offset + index}`, "0.defs", {inResources:true, offset:{x:0, y:0}, clip:rootCanvas, canvas:rootCanvas}));
+    pending = nodes.slice(before);
   }
   const imageSizes = await measureBackgroundImages(nodes);
   return {

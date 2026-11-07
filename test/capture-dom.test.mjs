@@ -2,7 +2,7 @@ import { describe, expect, setDefaultTimeout, test } from "bun:test";
 import { readFile } from "node:fs/promises";
 import { convertCaptureToTree, cssColorToHex } from "../src/convert-capture.mjs";
 import { hexToColor } from "../src/scene-nodes.mjs";
-import { renderInEditor } from "./support/render.mjs";
+import { decodePng, renderInEditor } from "./support/render.mjs";
 import { useBrowser } from "./support/browser.mjs";
 
 const captureHtml = useBrowser();
@@ -229,11 +229,26 @@ describe("what a capture may contain, at the edges", () => {
     expect(capture.nodes.find((node) => node.tag === "::after")?.text).toBe("••••••••••••");
   });
 
-  // Chromium draws pseudo-elements on an `appearance:none` input, the usual custom checkbox.
-  test("keeps the mark of a custom checkbox and draws none on a native one", async () => {
-    const capture = await captureHtml(`<style>input{position:relative;width:20px;height:20px}input::after{content:"";position:absolute;inset:4px;background:rgb(0, 150, 80)}.custom{appearance:none}</style>
-      <div id="root"><input class="custom" type="checkbox"><input type="checkbox"></div>`);
-    expect(capture.nodes.map((node) => node.tag)).toEqual(["div", "input", "::after", "input"]);
+  // Ground truth from Chromium's own pixels: an input's ::after is captured exactly where it is drawn.
+  test("captures an input's pseudo-element only where Chromium draws it", async () => {
+    const types = ["checkbox", "radio", "range", "color", "date", "file", "text", "password", "email", "number", "search", "button", "submit"];
+    const cell = (type, appearance) => `<div style="position:relative;width:80px;height:50px"><input type="${type}" class="${appearance}" value="v"></div>`;
+    const html = `<style>input{position:relative;width:70px;height:40px;margin:0}input::after{content:"PS";position:absolute;left:0;top:0;width:60px;height:40px;background:rgb(0, 255, 0)}
+      .none{appearance:none}</style><div id="root">${types.flatMap((type) => [cell(type, "auto"), cell(type, "none")]).join("")}</div>`;
+    const {capture, png} = await captureHtml(html, "#root", {screenshot:true, viewport:{width:200, height:1400}});
+    const {width, data} = await decodePng(png);
+    const drawn = capture.nodes.filter((node) => node.tag === "input").map((node, index) => {
+      const x = Math.round(node.rect.x + 30);
+      const y = Math.round(node.rect.y + 20);
+      const [r, g, b] = data.subarray((y * width + x) * 4, (y * width + x) * 4 + 3);
+      return {input:`${types[Math.floor(index / 2)]}/${index % 2 ? "none" : "auto"}`, drawn:g > 200 && r < 60 && b < 60};
+    });
+    const captured = new Set(capture.nodes.filter((node) => node.tag === "::after").map((node) => node.parentPath));
+    const inputs = capture.nodes.filter((node) => node.tag === "input");
+    const mismatches = drawn.filter(({drawn: isDrawn}, index) => isDrawn !== captured.has(inputs[index].path));
+    expect(mismatches).toEqual([]);
+    expect(drawn.filter((entry) => entry.drawn).length).toBeGreaterThan(4);
+    expect(drawn.find((entry) => entry.input === "password/none").drawn).toBe(false);
   });
 
   // Regression: Astro islands nest display:contents wrappers, and their content was dropped.

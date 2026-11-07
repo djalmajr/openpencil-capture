@@ -224,6 +224,7 @@ function isRendered(node) {
   return box ? box.checkVisibility({opacityProperty:true}) : true;
 }
 
+const PSEUDO_INPUT_TYPES = new Set(["checkbox", "radio", "range", "color", "file", "date", "time", "month", "week", "datetime-local"]);
 const REPLACED_ELEMENTS = new Set(["img", "input", "textarea", "select", "video", "audio", "iframe", "frame", "canvas", "embed", "object", "br", "hr"]);
 const shift = (rect, x, y) => ({left:rect.left + x, right:rect.right + x, top:rect.top + y, bottom:rect.bottom + y});
 
@@ -474,8 +475,9 @@ export async function captureElement(root, options = {}) {
     const childContext = {...context, inResources, clip:ownClip};
     // Pseudo-elements are part of the content `content-visibility:hidden` skips; replaced elements
     // such as <img> and <input> draw none.
-    // An <input> with `appearance:none` (a custom checkbox or toggle) does draw them.
-    const replaced = REPLACED_ELEMENTS.has(tag) && !(tag === "input" && computed.appearance === "none");
+    // Chromium draws them on the inputs it renders as widgets, whatever their `appearance`, and on
+    // no text-like input (measured).
+    const replaced = tag === "input" ? !PSEUDO_INPUT_TYPES.has(node.type) : REPLACED_ELEMENTS.has(tag);
     const drawsPseudo = !isSvg && !inResources && computed.contentVisibility !== "hidden" && !closedDetails && !replaced;
     if (drawsPseudo) visitPseudo(node, "::before", path, childContext);
     childNodes.filter((child) => child.nodeType === 1).forEach((child, index) => visit(child, `${path}.${index}`, path, childContext));

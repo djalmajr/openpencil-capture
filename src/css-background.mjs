@@ -519,7 +519,8 @@ export function cssBackgroundLayers(styles, width, height, {baseUrl, imageSizes 
     const offsetX = position.x(area.width - tileSize.width);
     const offsetY = position.y(area.height - tileSize.height);
     const padding = boxFor("padding-box", styles, width, height);
-    const repeatsOnlyUnderBorder = sameRect(area, clip) || sameRect(area, padding);
+    const coversClip = area.x <= clip.x + 0.5 && area.y <= clip.y + 0.5 && area.x + area.width >= clip.x + clip.width - 0.5 && area.y + area.height >= clip.y + clip.height - 0.5;
+    const repeatsOnlyUnderBorder = coversClip || sameRect(area, padding);
     const tiled = placed.repeats && (tileSize.width < area.width - 1 || tileSize.height < area.height - 1 || Math.abs(offsetX) > 0.5 || Math.abs(offsetY) > 0.5 || !repeatsOnlyUnderBorder);
     if (tiled) {
       const gradient = parseCssGradient(value, tileSize);

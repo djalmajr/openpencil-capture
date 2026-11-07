@@ -67,6 +67,7 @@ describe("the pasted design looks like the page", () => {
     "positioned pseudo-elements": `<style>#root{position:relative}#root::before{content:"";position:absolute;inset:12px 20px auto auto;width:40px;height:30px;padding:2px;border:2px solid rgb(0, 0, 200);background:rgb(240, 60, 60)}#root::after{content:"";position:absolute;left:50%;top:50%;transform:translate(-50%, -50%);width:30px;height:30px;border-radius:50%;background:linear-gradient(rgb(0, 180, 90), rgb(0, 90, 180))}</style>`
       + box("background:rgb(255, 255, 255);border:3px solid rgb(30, 30, 30);box-sizing:border-box"),
     "a gradient anchored to the content box repeats over the padding": box("padding:20px;box-sizing:border-box;background:linear-gradient(rgb(255, 0, 0), rgb(0, 0, 255)) content-box border-box"),
+    "a userSpaceOnUse radial gradient on a moved shape": box("background:rgb(255, 255, 255)", `<svg width="160" height="96" viewBox="0 0 80 48" style="display:block"><defs><radialGradient id="spot" gradientUnits="userSpaceOnUse" cx="20" cy="20" r="16"><stop offset="0" stop-color="rgb(255, 220, 0)"/><stop offset="1" stop-color="rgb(200, 0, 80)"/></radialGradient></defs><g transform="translate(30 4)"><circle cx="20" cy="20" r="18" fill="url(#spot)"/></g></svg>`),
     "an image at its natural size": box("background:rgb(255, 255, 255)", `<img src="${QUADRANTS}" style="width:160px;height:96px;object-fit:none;object-position:right 20px top 10px;display:block">`),
   };
   for (const [name, html] of Object.entries(cases)) {

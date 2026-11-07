@@ -89,7 +89,9 @@ function availableFamily(computed, cache, node, sample) {
   if (!context) return families[0] || null;
   for (const family of families) {
     if (GENERIC_FAMILIES.has(family.toLowerCase())) return family;
-    const key = `${computed.fontStyle} ${computed.fontWeight} ${family} ${probe}`;
+    // Coverage goes by Unicode range, so texts in the same blocks share one measurement.
+    const blocks = Array.from(new Set(Array.from(probe, (character) => character.codePointAt(0) >> 7))).sort((a, b) => a - b).join(",");
+    const key = `${computed.fontStyle} ${computed.fontWeight} ${family} ${blocks}`;
     if (!cache.has(key)) {
       const quoted = `"${family.replace(/["\\]/g, "\\$&")}"`;
       cache.set(key, ["monospace", "serif", "sans-serif"].some((fallback) => {
@@ -265,6 +267,7 @@ function contentClip(computed, box, clip) {
 }
 
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+const SVG_GRAPHICS = new Set(["path", "rect", "circle", "ellipse", "line", "polyline", "polygon"]);
 const styleOf = (node, pseudo) => node.ownerDocument.defaultView.getComputedStyle(node, pseudo);
 
 // The tree the page renders: a shadow host shows its shadow root, a slot what is assigned to it.
@@ -329,7 +332,8 @@ function pseudoBox(node, computed) {
   // filters or contains its descendants (for both); without one, the page or the viewport.
   const fixed = computed.position === "fixed";
   let block = null;
-  for (let element = node; element; element = element.parentElement || element.getRootNode().host || null) {
+  // The flat tree: a slotted element's parent is its slot, inside the shadow tree.
+  for (let element = node; element; element = element.assignedSlot || element.parentElement || element.getRootNode().host || null) {
     const style = view.getComputedStyle(element);
     const traps = style.transform !== "none" || style.filter !== "none" || style.perspective !== "none" || style.backdropFilter !== "none"
       || /paint|layout|strict|content/.test(style.contain || "") || /transform|filter|perspective/.test(style.willChange || "");
@@ -446,6 +450,13 @@ export async function captureElement(root, options = {}) {
     if (isSvg && !inResources) {
       const transform = svgTransform(node);
       if (transform) attributes.transformMatrix = transform;
+      // The shape's box in its own coordinates, where a userSpaceOnUse gradient is placed.
+      if (SVG_GRAPHICS.has(tag) && typeof node.getBBox === "function") {
+        try {
+          const bbox = node.getBBox();
+          attributes.bbox = [bbox.x, bbox.y, bbox.width, bbox.height].map((value) => Number(value.toFixed(4)));
+        } catch {}
+      }
     }
     if (context.propagated === node) attributes.backgroundPropagated = true;
     const frame = frameDocument(node);

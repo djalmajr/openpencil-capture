@@ -436,6 +436,12 @@ describe("convertCaptureToTree", () => {
     expect(root.fill).toMatchObject({type:"gradient", gradientType:"linear"});
   });
 
+  test("keeps a gradient native when its area covers what it paints", () => {
+    const sides = Object.fromEntries(["Top", "Right", "Bottom", "Left"].flatMap((side) => [[`border${side}Width`, "4px"], [`border${side}Style`, "solid"], [`border${side}Color`, "rgba(0, 0, 0, 0.5)"]]));
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 200, 100], {...sides, backgroundColor:"rgba(0, 0, 0, 0)", backgroundImage:"linear-gradient(rgb(255, 0, 0), rgb(0, 0, 255))", backgroundRepeat:"repeat", backgroundOrigin:"border-box", backgroundClip:"padding-box", backgroundSize:"auto", backgroundPositionX:"0%", backgroundPositionY:"0%"}]));
+    expect([root.fill, ...root.children.map((child) => child.fill)].find((fill) => fill?.type)).toMatchObject({type:"gradient"});
+  });
+
   test("places a userSpaceOnUse radial gradient against the shape's own box", () => {
     const svgNs = {namespace:"http://www.w3.org/2000/svg"};
     const tree = convertCaptureToTree(ir(

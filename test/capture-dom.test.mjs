@@ -271,3 +271,16 @@ describe("what a capture may contain, at the edges", () => {
     expect(capture.nodes.filter((node) => node.text).map((node) => [node.text, node.fontFamily])).toEqual([["Привет", "SubFont"], ["Latin", "serif"], ["Framed", "FrameFont"]]);
   });
 });
+
+describe("pseudo-elements in the flat tree", () => {
+  // Regression: a slotted element's ::after was placed from the light DOM, not the shadow tree.
+  test("places a slotted element's pseudo-element in its shadow tree's containing block", async () => {
+    const capture = await captureHtml(`<style>.chip::after{content:"";position:absolute;left:0;top:0;width:10px;height:10px;background:red}</style><div id="root"><x-frame><span class="chip">c</span></x-frame></div>`, "#root", {before:() => {
+      customElements.define("x-frame", class extends HTMLElement {
+        constructor() { super(); this.attachShadow({mode:"open"}).innerHTML = '<div style="position:relative;left:40px;top:30px"><slot></slot></div>'; }
+      });
+    }});
+    const after = capture.nodes.find((node) => node.tag === "::after");
+    expect([after.rect.x, after.rect.y]).toEqual([40, 30]);
+  });
+});

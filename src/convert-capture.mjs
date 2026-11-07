@@ -526,7 +526,8 @@ function svgGraphic(node, parent, byPath, paintServers) {
   // that is turned, or copied by a <use> (its box is the <use>'s, not its own).
   const asPath = ["path", "line", "polyline", "polygon"].includes(node.tag) || node.synthetic === "use" || hasRotation(transform);
   // The shape's box in the SVG's own coordinates, through the viewBox's letterboxed scale.
-  const userBox = svg && strokeScale > 0 ? {
+  const [bx, by, bw, bh] = node.attributes.bbox || [];
+  const userBox = bw > 0 && bh > 0 ? {x:bx, y:by, width:bw, height:bh} : svg && strokeScale > 0 ? {
     x:viewBox[0] + (node.rect.x - svg.rect.x - (svg.rect.width - viewBox[2] * strokeScale) / 2) / strokeScale,
     y:viewBox[1] + (node.rect.y - svg.rect.y - (svg.rect.height - viewBox[3] * strokeScale) / 2) / strokeScale,
     width:node.rect.width / strokeScale, height:node.rect.height / strokeScale,

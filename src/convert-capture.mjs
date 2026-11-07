@@ -921,6 +921,21 @@ export function convertCaptureToTree(capture) {
       else stats.skippedSvgUnsupported += 1;
       return withCssMasks(node, applyColorFilter(node, graphic), capture, maskContext);
     }
+    // A list marker's disc, circle or square, painted as Chromium paints it: a shape, not a glyph.
+    if (node.attributes.markerSymbol) {
+      const color = safeColor(node.styles.color) || "#000000";
+      const shape = {name:`${semanticLayerName(byPath.get(node.parentPath) || node)} · Marker`, layoutPosition:"absolute", ...relativeRect(node, parent)};
+      stats.frames += 1;
+      if (node.attributes.markerSymbol === "square") return {type:"rectangle", ...shape, fill:color};
+      // Chromium's canonical disclosure triangles, in the unit square of the marker's box.
+      const triangle = {"disclosure-closed":[[0, 0], [0.86, 0.5], [0, 1]], "disclosure-open":[[0, 0.07], [0.5, 0.93], [1, 0.07]]}[node.attributes.markerSymbol];
+      if (triangle) {
+        return {type:"path", ...shape, viewBox:[0, 0, shape.width, shape.height], fill:color,
+          geometry:`${triangle.map(([x, y], index) => `${index ? "L" : "M"} ${round(x * shape.width)} ${round(y * shape.height)}`).join(" ")} Z`};
+      }
+      if (node.attributes.markerSymbol === "circle") return {type:"ellipse", ...shape, fill:"#00000000", stroke:color, strokeWidth:1};
+      return {type:"ellipse", ...shape, fill:color};
+    }
     if (node.tag === "img" || node.tag === "canvas") {
       const url = node.tag === "canvas"
         ? node.attributes.dataUrl

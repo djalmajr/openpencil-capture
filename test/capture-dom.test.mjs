@@ -31,6 +31,8 @@ describe("what a capture may contain", () => {
     </div>`);
     expect(leaked(capture, ["closed-secret", "until-found-secret", "content-visibility-secret", "display-secret", "opacity-secret", "opacity-input-secret", "visibility-secret"])).toEqual([]);
     expect(texts(convertCaptureToTree(capture))).toEqual(["shown", "Summary"]);
+    // The closed <details> still draws its summary's triangle.
+    expect(capture.nodes.filter((node) => node.tag === "::marker").map((node) => node.attributes.markerSymbol)).toEqual(["disclosure-closed"]);
   });
 
   // Mutation captured: ignoring the clip chain keeps values that are moved or clipped out of sight.
@@ -185,13 +187,94 @@ describe("baking filters into images", () => {
 });
 
 describe("pseudo-elements", () => {
-  test("captures a positioned pseudo-element with its quoted text, and leaves inline ones out", async () => {
+  test("captures a positioned pseudo-element with its quoted text", async () => {
     const capture = await captureHtml(`<style>#root{position:relative;width:120px;height:40px}#root::after{content:"New";position:absolute;top:4px;right:4px;padding:2px 6px;background:rgb(220, 0, 0);color:white;font:12px Arial}#root::before{content:"•"}</style><div id="root"></div>`);
-    expect(capture.nodes.map((node) => node.tag)).toEqual(["div", "::after"]);
+    expect(capture.nodes.map((node) => node.tag)).toEqual(["div", "::before", "::after"]);
     const {root} = convertCaptureToTree(capture);
-    expect(root.children[0]).toMatchObject({name:"After · Decoration", fill:"#DC0000", y:4});
-    expect(root.children[0].children[0]).toMatchObject({type:"text", content:"New"});
+    const after = root.children.find((child) => child.name === "After · Decoration");
+    expect(after).toMatchObject({fill:"#DC0000", y:4});
+    expect(after.children[0]).toMatchObject({type:"text", content:"New"});
   });
+});
+
+// A ::before lays out as a first child would and an ::after as a last one, so a real <span> in
+// that place, with the same rules, shows where Chromium draws the pseudo-element.
+describe("pseudo-elements in the flow", () => {
+  const cases = {
+    "inline text around a paragraph's text": [`.x{font:16px Arial;width:300px}`, `.x P1{content:"→ ";color:rgb(200, 0, 0)} .x P2{content:" »"}`, "Hello world"],
+    "an inline-block icon in the middle of the line": [`.x{font:15px Arial;line-height:24px}`, `.x P1{content:"";display:inline-block;width:12px;height:12px;background:rgb(200, 0, 0);vertical-align:middle;margin-right:6px}`, "Label"],
+    "an empty inline-block on the baseline": [`.x{font:18px Arial}`, `.x P2{content:"";display:inline-block;width:10px;height:10px;background:rgb(0, 0, 200);margin-left:4px}`, "Text"],
+    "an inline badge in a smaller font with padding": [`.x{font:16px Arial}`, `.x P2{content:"NEW";font:bold 10px Arial;padding:2px 4px;background:rgb(0, 120, 60);color:white;margin-left:6px}`, "Release"],
+    "a block divider under paragraphs": [`.x{font:14px Arial;width:200px} .x p{margin:6px 0}`, `.x P2{content:"";display:block;height:2px;background:rgb(0, 0, 0);margin-top:8px}`, "<p>One</p><p>Two</p>"],
+    "flex items packed with a gap and centered": [`.x{display:flex;align-items:center;gap:8px;height:40px;font:14px Arial;padding:0 10px}`, `.x P1{content:"";width:16px;height:16px;background:rgb(200, 0, 0)} .x P2{content:"";width:10px;height:10px;border-radius:50%;background:rgb(0, 0, 200)}`, "<span>A</span><b>B</b>"],
+    "flex items in a column": [`.x{display:flex;flex-direction:column;align-items:flex-end;row-gap:4px;width:120px;font:14px Arial}`, `.x P1{content:"";width:30px;height:6px;background:rgb(200, 0, 0)} .x P2{content:"";width:50px;height:4px;background:rgb(0, 0, 200)}`, "<div>One</div><div>Two</div>"],
+    "a block before content, pushed by its margin": [`.x{font:14px Arial;padding:10px}`, `.x P1{content:"Note";display:block;font:bold 12px Arial;margin:0 0 4px 6px;padding:2px}`, "Body text"],
+  };
+  for (const [name, [base, rules, inner]] of Object.entries(cases)) {
+    test(name, async () => {
+      const pseudo = `<style>${base} ${rules.replaceAll("P1", "::before").replaceAll("P2", "::after").replaceAll(" ::", "::")}</style><div id="root" class="x">${inner}</div>`;
+      const real = `<style>${base} ${rules.replaceAll("P1", "> .p1").replaceAll("P2", "> .p2").replace(/content:"((?:[^"\\]|\\.)*)";?/g, "")}</style><div id="root" class="x">${rules.includes("P1") ? `<span class="p1" id="p1">${rules.match(/P1\{content:"([^"]*)"/)[1]}</span>` : ""}${inner}${rules.includes("P2") ? `<span class="p2" id="p2">${rules.match(/P2\{content:"([^"]*)"/)[1]}</span>` : ""}</div>`;
+      const captured = await captureHtml(pseudo);
+      const reference = await captureHtml(real);
+      for (const [tag, id] of [["::before", "p1"], ["::after", "p2"]]) {
+        if (!rules.includes(id.toUpperCase())) continue;
+        const node = captured.nodes.find((candidate) => candidate.tag === tag);
+        const span = reference.nodes.find((candidate) => candidate.attributes.id === id);
+        expect(node, tag).toBeDefined();
+        for (const key of ["x", "y", "width", "height"]) expect(Math.abs(node.rect[key] - span.rect[key]), `${tag} ${key}: ${node.rect[key]} against ${span.rect[key]}`).toBeLessThan(1);
+        if (span.textRect) for (const key of ["x", "y"]) expect(Math.abs(node.textRect[key] - span.textRect[key]), `${tag} text ${key}`).toBeLessThan(1);
+      }
+    });
+  }
+});
+
+// Nothing can stand in for a marker, so the check is a picture: the list with its markers, against
+// the list without them and each marker's text drawn by Chromium where the capture says it is.
+describe("list markers", () => {
+  // The marker's own ink: what is dark in `image` and not in `bare`, the list with markers hidden.
+  const ink = ({width, data}, bare, box) => {
+    let found = null;
+    for (let y = Math.max(0, Math.floor(box.y)); y < Math.ceil(box.y + box.height); y += 1) {
+      for (let x = Math.max(0, Math.floor(box.x)); x < Math.min(width, Math.ceil(box.x + box.width)); x += 1) {
+        if (data[(y * width + x) * 4] > 128 || bare.data[(y * width + x) * 4] <= 128) continue;
+        found = found ? {left:Math.min(found.left, x), top:Math.min(found.top, y), right:Math.max(found.right, x), bottom:Math.max(found.bottom, y)} : {left:x, top:y, right:x, bottom:y};
+      }
+    }
+    return found;
+  };
+  const cases = {
+    "discs outside the text": `<ul id="root" style="font:16px Arial;margin:0;padding:4px 0 4px 40px;width:200px;background:white"><li>First</li><li style="font-size:22px">Second</li></ul>`,
+    "circles in a nested list": `<ul id="root" style="font:18px Arial;margin:0;padding:4px 0 4px 30px;width:200px;list-style-type:circle;background:white"><li>Outer</li><li>Again</li></ul>`,
+    "the disclosure triangles of details": `<div id="root" style="font:16px Arial;width:200px;padding:4px;background:white"><details><summary>Closed</summary>x</details><details open><summary>Open</summary>y</details></div>`,
+    "squares inside the text": `<ul id="root" style="font:14px Verdana;margin:0;padding:4px 10px;width:200px;list-style:square inside;background:white"><li>First</li><li>Second</li></ul>`,
+    "numbers from a start, inside the text": `<ol id="root" start="8" style="font:15px Georgia;margin:0;padding:4px 10px;width:200px;list-style-position:inside;background:white"><li>Eight</li><li>Nine</li><li>Ten</li></ol>`,
+    "roman numerals and a marker of its own": `<style>#root li::marker{font:bold 13px Arial}</style><ol id="root" style="font:15px Arial;margin:0;padding:4px 0 4px 50px;width:200px;list-style-type:upper-roman;background:white"><li>One</li><li value="4">Four</li></ol>`,
+  };
+  for (const [name, html] of Object.entries(cases)) {
+    test(name, async () => {
+      const {capture, png} = await captureHtml(html, "#root", {screenshot:true});
+      const markers = capture.nodes.filter((node) => node.tag === "::marker");
+      expect(markers.length).toBeGreaterThan(1);
+      const hidden = `<style>#root li::marker, #root summary::marker{color:transparent}</style>${html.replace(/(<(?:[uo]l|div) id="root" [^>]*style=")/, "$1position:relative;")}`;
+      // A symbol is a shape the capture sizes; a text marker, its text in the marker's font.
+      const triangles = {"disclosure-closed":"0,0 0.86,0.5 0,1", "disclosure-open":"0,0.07 0.5,0.93 1,0.07"};
+      const spans = markers.map((marker) => triangles[marker.attributes.markerSymbol]
+        ? `<svg viewBox="0 0 1 1" preserveAspectRatio="none" style="position:absolute;left:${marker.rect.x}px;top:${marker.rect.y}px;width:${marker.rect.width}px;height:${marker.rect.height}px"><polygon points="${triangles[marker.attributes.markerSymbol]}"/></svg>`
+        : marker.attributes.markerSymbol
+        ? `<span style="position:absolute;left:${marker.rect.x}px;top:${marker.rect.y}px;width:${marker.rect.width}px;height:${marker.rect.height}px;background:${marker.attributes.markerSymbol === "circle" ? "none;border:1px solid black;box-sizing:border-box" : "black"};${marker.attributes.markerSymbol === "square" ? "" : "border-radius:50%;"}"></span>`
+        : `<span style="position:absolute;left:${marker.textRect.x}px;top:${marker.textRect.y}px;line-height:${marker.textRect.height}px;font:${marker.styles.fontStyle} ${marker.styles.fontWeight} ${marker.styles.fontSize} ${marker.styles.fontFamily};white-space:pre">${marker.text}</span>`).join("");
+      const bare = await captureHtml(hidden, "#root", {screenshot:true});
+      const drawn = await captureHtml(hidden.replace(/(<\/[uo]l>|<\/div>$)/, `${spans}$1`), "#root", {screenshot:true});
+      const [page, without, copy] = [await decodePng(png), await decodePng(bare.png), await decodePng(drawn.png)];
+      for (const marker of markers) {
+        const area = {x:marker.rect.x - 8, y:marker.rect.y - 4, width:marker.rect.width + 16, height:marker.rect.height + 8};
+        const [expected, actual] = [ink(page, without, area), ink(copy, without, area)];
+        expect(expected, marker.text).not.toBeNull();
+        for (const key of ["left", "top", "right", "bottom"]) expect(Math.abs(actual[key] - expected[key]), `${marker.text} ${key}: ${actual[key]} against ${expected[key]}`).toBeLessThanOrEqual(1);
+      }
+      expect(markers.map((marker) => marker.text || marker.attributes.markerSymbol)).toEqual({discs:["disc", "disc"], circles:["circle", "circle"], the:["disclosure-closed", "disclosure-open"], squares:["square", "square"], numbers:["8.", "9.", "10."], roman:["I.", "IV."]}[name.split(" ")[0]]);
+    });
+  }
 });
 
 // Regressions found in review: each of these showed text the page does not draw.

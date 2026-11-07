@@ -319,12 +319,202 @@ function useTarget(node) {
   return node.getRootNode().getElementById?.(id) || node.ownerDocument.getElementById(id);
 }
 
+const measureContexts = new WeakMap();
+
+// A font's metrics as text layout uses them, and the width of `text` set in it.
+function fontMetrics(document, computed, text = "") {
+  let context = measureContexts.get(document);
+  if (!context) {
+    context = document.createElement("canvas").getContext("2d");
+    measureContexts.set(document, context);
+  }
+  context.font = `${computed.fontStyle} ${computed.fontWeight} ${computed.fontSize} ${computed.fontFamily}`;
+  context.letterSpacing = computed.letterSpacing === "normal" ? "0px" : computed.letterSpacing;
+  const x = context.measureText("x");
+  const ascent = x.fontBoundingBoxAscent;
+  const descent = x.fontBoundingBoxDescent;
+  const lineHeight = Number.parseFloat(computed.lineHeight) || ascent + descent;
+  return {ascent, descent, xHeight:x.actualBoundingBoxAscent, lineHeight, width:text ? context.measureText(text).width : 0};
+}
+
+const px = (value) => Number.parseFloat(value) || 0;
+const edges = (computed, kind) => {
+  const suffix = kind === "border" ? "Width" : "";
+  const name = (side) => kind === "border" ? `border${side}${suffix}` : `${kind}${side}`;
+  return {top:px(computed[name("Top")]), right:px(computed[name("Right")]), bottom:px(computed[name("Bottom")]), left:px(computed[name("Left")])};
+};
+
+// An element's content box in the viewport.
+function contentBox(node, computed) {
+  const rect = node.getBoundingClientRect();
+  const border = edges(computed, "border");
+  const padding = edges(computed, "padding");
+  return {left:rect.left + border.left + padding.left, top:rect.top + border.top + padding.top, right:rect.right - border.right - padding.right, bottom:rect.bottom - border.bottom - padding.bottom};
+}
+
+// The boxes a pseudo-element sits between: each in-flow child, text or element, with the first
+// and last of its fragments.
+function flowItems(node, childNodes, view) {
+  const items = [];
+  for (const child of childNodes) {
+    if (child.nodeType === 3 && child.data.trim()) {
+      const range = node.ownerDocument.createRange();
+      range.selectNodeContents(child);
+      const rects = Array.from(range.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0);
+      if (rects.length) items.push({text:true, parent:child.parentElement, first:rects[0], last:rects.at(-1)});
+    } else if (child.nodeType === 1) {
+      const style = view.getComputedStyle(child);
+      if (style.display === "none" || ["absolute", "fixed"].includes(style.position)) continue;
+      if (style.display === "contents") {
+        items.push(...flowItems(child, Array.from(child.childNodes), view));
+        continue;
+      }
+      const rects = Array.from(child.getClientRects()).filter((rect) => rect.width > 0 || rect.height > 0);
+      if (rects.length) items.push({text:false, style, margin:edges(style, "margin"), border:edges(style, "border"), padding:edges(style, "padding"), first:rects[0], last:rects.at(-1)});
+    }
+  }
+  return items;
+}
+
+// The baseline of the line an item sits on: from its text, or from the line's own font.
+function itemBaseline(item, view, fallback) {
+  if (item?.text) return item.first.top + fontMetrics(item.parent.ownerDocument, view.getComputedStyle(item.parent)).ascent;
+  if (item?.style.display === "inline") return item.first.top + item.border.top + item.padding.top + fontMetrics(view.document, item.style).ascent;
+  return fallback;
+}
+
+/**
+ * Where a pseudo-element in the flow is drawn, worked out from what it sits next to, since
+ * nothing reports it: a `::before` ends where the first in-flow content starts and an `::after`
+ * starts where the last ends, as a first or last child would. Inline ones sit on that line's
+ * baseline as `vertical-align` says; block ones stack above or below the content; in a flex
+ * container they are items packed with `gap` and aligned on the cross axis. Null for what this
+ * cannot place: grid items, right-to-left text, reversed or wrapping flex lines.
+ */
+function flowPseudoBox(node, pseudo, computed, childNodes) {
+  const view = node.ownerDocument.defaultView;
+  const parent = view.getComputedStyle(node);
+  if (parent.direction === "rtl" || computed.direction === "rtl" || /grid/.test(parent.display)) return null;
+  const literal = computed.content.match(/^"((?:[^"\\]|\\.)*)"$/)?.[1]?.replace(/\\(.)/g, "$1") ?? "";
+  const margin = edges(computed, "margin");
+  const border = edges(computed, "border");
+  const padding = edges(computed, "padding");
+  const inline = computed.display === "inline";
+  const own = fontMetrics(node.ownerDocument, computed, literal);
+  const sized = (axis) => {
+    const value = px(computed[axis]);
+    if (computed.boxSizing === "border-box") return value;
+    return axis === "width" ? value + border.left + border.right + padding.left + padding.right : value + border.top + border.bottom + padding.top + padding.bottom;
+  };
+  const width = inline ? own.width + border.left + border.right + padding.left + padding.right : sized("width");
+  const height = inline ? own.ascent + own.descent + border.top + border.bottom + padding.top + padding.bottom : sized("height");
+  if (!(width > 0 && height > 0)) return null;
+  const content = contentBox(node, parent);
+  const items = flowItems(node, childNodes, view);
+  const before = pseudo === "::before";
+  const neighbor = before ? items[0] : items.at(-1);
+  // The text layer holds the content trimmed, as the capture keeps it; collapsed spaces count once.
+  const collapses = !/^(pre|pre-wrap|break-spaces)$/.test(computed.whiteSpace);
+  const leading = literal.match(/^\s*/)[0];
+  const lead = leading ? fontMetrics(node.ownerDocument, computed, collapses ? " " : leading).width : 0;
+  const glyphs = fontMetrics(node.ownerDocument, computed, literal.trim()).width;
+  const box = (x, y) => ({x, y, width, height, left:x, top:y, right:x + width, bottom:y + height,
+    textOffset:{x:border.left + padding.left + lead, y:border.top + padding.top + (inline ? 0 : Math.max(0, (height - border.top - border.bottom - padding.top - padding.bottom - own.lineHeight) / 2) + (own.lineHeight - own.ascent - own.descent) / 2)}, textWidth:glyphs, textHeight:own.ascent + own.descent});
+  if (/flex/.test(parent.display)) {
+    if (/reverse/.test(parent.flexDirection) || parent.flexWrap !== "nowrap") return null;
+    const row = !parent.flexDirection.startsWith("column");
+    const gap = px(row ? parent.columnGap : parent.rowGap);
+    const align = ["auto", "normal"].includes(computed.alignSelf) ? parent.alignItems : computed.alignSelf;
+    const spread = /space-(between|around|evenly)/.test(parent.justifyContent);
+    const cross = (start, end, size, marginStart, marginEnd) => /center/.test(align) ? (start + end - size) / 2 + (marginStart - marginEnd) / 2
+      : /end/.test(align) ? end - size - marginEnd : start + marginStart;
+    if (row) {
+      const x = !neighbor || spread
+        ? (before ? content.left + margin.left : content.right - width - margin.right)
+        : before ? neighbor.first.left - (neighbor.margin?.left || 0) - gap - margin.right - width : neighbor.last.right + (neighbor.margin?.right || 0) + gap + margin.left;
+      return box(x, cross(content.top, content.bottom, height, margin.top, margin.bottom));
+    }
+    const y = !neighbor || spread
+      ? (before ? content.top + margin.top : content.bottom - height - margin.bottom)
+      : before ? neighbor.first.top - (neighbor.margin?.top || 0) - gap - margin.bottom - height : neighbor.last.bottom + (neighbor.margin?.bottom || 0) + gap + margin.top;
+    return box(cross(content.left, content.right, width, margin.left, margin.right), y);
+  }
+  const lines = fontMetrics(node.ownerDocument, parent);
+  if (!inline && !/^inline-/.test(computed.display)) {
+    // A block: above the content, or below the last line or box of it.
+    if (before || !neighbor) return box(content.left + margin.left, content.top + margin.top);
+    const end = neighbor.text ? neighbor.last.bottom + (lines.lineHeight - neighbor.last.height) / 2 : neighbor.last.bottom;
+    return box(content.left + margin.left, end + (neighbor.text ? margin.top : Math.max(margin.top, neighbor.margin.bottom)));
+  }
+  // Inline: beside the first or last content, on its line's baseline.
+  const lineStart = (size) => /center/.test(parent.textAlign) ? (content.left + content.right - size) / 2 : /right|end/.test(parent.textAlign) ? content.right - size : content.left;
+  const x = !neighbor ? lineStart(width + margin.left + margin.right) + margin.left
+    : before ? neighbor.first.left - (neighbor.text ? 0 : neighbor.margin.left) - margin.right - width
+    : neighbor.last.right + (neighbor.text ? 0 : neighbor.margin.right) + margin.left;
+  const baseline = itemBaseline(neighbor, view, content.top + (lines.lineHeight - lines.ascent - lines.descent) / 2 + lines.ascent);
+  const textBaseline = border.top + padding.top + (inline ? 0 : (own.lineHeight - own.ascent - own.descent) / 2) + own.ascent;
+  const align = computed.verticalAlign;
+  const y = align === "middle" ? baseline - lines.xHeight / 2 - height / 2
+    : align === "text-top" ? baseline - lines.ascent + margin.top
+    : align === "text-bottom" ? baseline + lines.descent - height - margin.bottom
+    : align === "top" ? baseline - lines.ascent - (lines.lineHeight - lines.ascent - lines.descent) / 2 + margin.top
+    : align === "bottom" ? baseline + lines.descent + (lines.lineHeight - lines.ascent - lines.descent) / 2 - height - margin.bottom
+    : (inline || literal ? baseline - textBaseline : baseline - margin.bottom - height) - (/^-?[\d.]+px$/.test(align) ? px(align) : 0);
+  return box(x, y);
+}
+
+const MARKER_SYMBOLS = {disc:"• ", circle:"◦ ", square:"▪ ", "disclosure-open":"▾ ", "disclosure-closed":"▸ "};
+
+function romanNumeral(value) {
+  if (!(value > 0 && value < 4000)) return String(value);
+  return [[1000, "m"], [900, "cm"], [500, "d"], [400, "cd"], [100, "c"], [90, "xc"], [50, "l"], [40, "xl"], [10, "x"], [9, "ix"], [5, "v"], [4, "iv"], [1, "i"]]
+    .reduce(([text, rest], [amount, letters]) => [text + letters.repeat(Math.floor(rest / amount)), rest % amount], ["", value])[0];
+}
+
+function alphabetic(value) {
+  let text = "";
+  for (let rest = value; rest > 0; rest = Math.floor((rest - 1) / 26)) text = String.fromCharCode(97 + (rest - 1) % 26) + text;
+  return text || String(value);
+}
+
+// A list item's number: from its list's `start`, counting its list-item siblings, up or down.
+function listOrdinal(item) {
+  const list = item.parentElement;
+  const siblings = list ? Array.from(list.children).filter((child) => child.localName === "li") : [item];
+  const reversed = list?.localName === "ol" && list.reversed;
+  let value = list?.localName === "ol" && list.hasAttribute("start") ? list.start : reversed ? siblings.length : 1;
+  for (const sibling of siblings) {
+    if (sibling.hasAttribute("value")) value = Number.parseInt(sibling.getAttribute("value"), 10) || 0;
+    if (sibling === item) return value;
+    value += reversed ? -1 : 1;
+  }
+  return value;
+}
+
+// The text of a list item's marker, as its `list-style-type` (or the marker's own `content`) writes it.
+function markerText(item, markerStyle, itemStyle) {
+  const quoted = (value) => value?.match(/^"((?:[^"\\]|\\.)*)"$/)?.[1]?.replace(/\\(.)/g, "$1");
+  const own = quoted(markerStyle.content);
+  if (own !== undefined) return own;
+  const type = itemStyle.listStyleType;
+  const written = quoted(type);
+  if (written !== undefined) return written;
+  if (MARKER_SYMBOLS[type]) return MARKER_SYMBOLS[type];
+  const value = listOrdinal(item);
+  const numbers = {
+    decimal:String(value), "decimal-leading-zero":value >= 0 && value < 10 ? `0${value}` : String(value),
+    "lower-alpha":alphabetic(value), "lower-latin":alphabetic(value), "upper-alpha":alphabetic(value).toUpperCase(), "upper-latin":alphabetic(value).toUpperCase(),
+    "lower-roman":romanNumeral(value), "upper-roman":romanNumeral(value).toUpperCase(),
+  };
+  return numbers[type] === undefined ? null : `${numbers[type]}. `;
+}
+
 // Properties a referenced element inherits from the <use> that shows it, not from where it sits.
 const INHERITED_SVG_STYLES = ["fill", "fillOpacity", "fillRule", "stroke", "strokeWidth", "strokeOpacity", "strokeDasharray", "strokeDashoffset", "strokeLinecap", "strokeLinejoin", "color", "visibility"];
 
 // Nothing reports where a pseudo-element is drawn. A positioned one is placed from its containing
 // block with the pixels the browser resolves for `left`, `top` and its size, plus the translation
-// of its transform; an inline one has no such numbers and is left out.
+// of its transform; one in the flow, from its neighbors (`flowPseudoBox`).
 function pseudoBox(node, computed) {
   if (!["absolute", "fixed"].includes(computed.position)) return null;
   const view = node.ownerDocument.defaultView;
@@ -496,16 +686,60 @@ export async function captureElement(root, options = {}) {
     // no text-like input (measured).
     const replaced = tag === "input" ? !PSEUDO_INPUT_TYPES.has(node.type) : REPLACED_ELEMENTS.has(tag);
     const drawsPseudo = !isSvg && !inResources && computed.contentVisibility !== "hidden" && !closedDetails && !replaced;
-    if (drawsPseudo) visitPseudo(node, "::before", path, childContext);
+    if (drawsPseudo && computed.display === "list-item") visitMarker(node, path, childContext, childNodes, computed);
+    if (drawsPseudo) visitPseudo(node, "::before", path, childContext, childNodes);
     childNodes.filter((child) => child.nodeType === 1).forEach((child, index) => visit(child, `${path}.${index}`, path, childContext));
-    if (drawsPseudo) visitPseudo(node, "::after", path, childContext);
+    if (drawsPseudo) visitPseudo(node, "::after", path, childContext, childNodes);
   };
 
-  const visitPseudo = (node, pseudo, parentPath, context) => {
+  // A list item's marker: its text, set in the marker's font on the first line's baseline, ending
+  // where the line starts when outside, starting there when inside.
+  const visitMarker = (node, parentPath, context, childNodes, itemStyle) => {
+    const computed = styleOf(node, "::marker");
+    if (!computed || computed.content === "none" || itemStyle.listStyleImage !== "none" || itemStyle.direction === "rtl") return;
+    const text = markerText(node, computed, itemStyle);
+    if (!text?.trim()) return;
+    const view = node.ownerDocument.defaultView;
+    const metrics = fontMetrics(node.ownerDocument, computed, text);
+    const trimmed = text.trim();
+    const glyphs = fontMetrics(node.ownerDocument, computed, trimmed);
+    const content = contentBox(node, itemStyle);
+    const lines = fontMetrics(node.ownerDocument, itemStyle);
+    const baseline = itemBaseline(flowItems(node, childNodes, view)[0], view, content.top + (lines.lineHeight - lines.ascent - lines.descent) / 2 + lines.ascent);
+    // Chromium offsets a symbol (disc, circle, square, disclosure triangle) by two thirds of its font's ascent and a
+    // fixed 7px pad outside, and by one pixel inside; other markers end or start at the line.
+    const symbol = Boolean(MARKER_SYMBOLS[itemStyle.listStyleType]) && !/^"/.test(computed.content);
+    const inside = itemStyle.listStylePosition === "inside";
+    const ascent = Math.round(metrics.ascent);
+    const start = symbol
+      ? content.left - (inside ? 1 : Math.floor(ascent * 2 / 3) + 8)
+      : inside ? content.left : content.left - metrics.width;
+    // A symbol is not its glyph: Chromium paints a shape in a box sized from the ascent
+    // (RelativeSymbolMarkerRect), a pixel into the marker, on the first line.
+    // A disclosure triangle is larger, two thirds of the font size, and stands on the baseline
+    // (measured from 12 to 48 pixels).
+    const disclosure = /^disclosure/.test(itemStyle.listStyleType);
+    const side = disclosure ? px(computed.fontSize) * 2 / 3 : Math.floor((Math.floor(ascent * 2 / 3) + 1) / 2);
+    const raw = disclosure ? {x:start + 1, y:baseline - side, width:side, height:side}
+      : symbol ? {x:start + 1, y:Math.round(baseline) - ascent + Math.floor(3 * (ascent - Math.floor(ascent * 2 / 3)) / 2), width:side, height:side}
+      : {x:start, y:baseline - metrics.ascent, width:glyphs.width, height:metrics.ascent + metrics.descent};
+    const box = {left:raw.x + context.offset.x, top:raw.y + context.offset.y, right:raw.x + raw.width + context.offset.x, bottom:raw.y + raw.height + context.offset.y};
+    if (!intersects(box, context.clip) || !(raw.width > 0)) return;
+    const rect = rectIn(raw, context.offset);
+    const shown = isMaskedByCss(computed) ? maskText(trimmed) : trimmed;
+    nodes.push({
+      path:`${parentPath}.marker`, parentPath, tag:"::marker", namespace:"http://www.w3.org/1999/xhtml", role:null, name:"::marker",
+      ...(symbol ? {text:null, textRect:null, textRuns:[]} : {text:shown, textRect:rect, textRuns:[], fontFamily:availableFamily(computed, fontCache, node, trimmed)}),
+      rect, styles:Object.fromEntries(CAPTURED_STYLE_KEYS.map((key) => [key, computed[key]])),
+      attributes:symbol ? {markerSymbol:itemStyle.listStyleType} : {}, synthetic:"pseudo",
+    });
+  };
+
+  const visitPseudo = (node, pseudo, parentPath, context, childNodes) => {
     const computed = styleOf(node, pseudo);
     if (!computed || computed.content === "none" || computed.content === "normal" || computed.display === "none") return;
     if (computed.visibility !== "visible" || Number.parseFloat(computed.opacity) === 0) return;
-    const raw = pseudoBox(node, computed);
+    const raw = pseudoBox(node, computed) || flowPseudoBox(node, pseudo, computed, childNodes);
     if (!raw) return;
     const box = {left:raw.left + context.offset.x, top:raw.top + context.offset.y, right:raw.right + context.offset.x, bottom:raw.bottom + context.offset.y};
     if (!intersects(box, computed.position === "fixed" ? context.canvas : context.clip)) return;
@@ -514,7 +748,8 @@ export async function captureElement(root, options = {}) {
     const literal = computed.content.match(/^"((?:[^"\\]|\\.)*)"$/)?.[1]?.replace(/\\(.)/g, "$1").trim();
     const quoted = literal && isMaskedByCss(computed) ? maskText(literal) : literal;
     const number = (value) => Number.parseFloat(value) || 0;
-    const textRect = quoted ? {
+    // A box worked out from the flow knows where its text sits; a positioned one centers it.
+    const textRect = quoted && raw.textOffset ? {x:rect.x + raw.textOffset.x, y:rect.y + raw.textOffset.y, width:raw.textWidth, height:raw.textHeight} : quoted ? {
       x:rect.x + number(computed.borderLeftWidth) + number(computed.paddingLeft), y:rect.y + number(computed.borderTopWidth) + number(computed.paddingTop),
       width:Math.max(1, rect.width - number(computed.borderLeftWidth) - number(computed.borderRightWidth) - number(computed.paddingLeft) - number(computed.paddingRight)),
       height:Math.max(1, rect.height - number(computed.borderTopWidth) - number(computed.borderBottomWidth) - number(computed.paddingTop) - number(computed.paddingBottom)),

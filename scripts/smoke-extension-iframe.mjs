@@ -49,12 +49,17 @@ try {
   const frame = page.frames().find((candidate) => candidate.url().startsWith(childOrigin));
   if (!frame) throw new Error("Could not find the extension iframe fixture");
 
-  await serviceWorker.evaluate(async () => {
+  const clickToolbarButton = () => serviceWorker.evaluate(async () => {
     const [tab] = await chrome.tabs.query({active:true, currentWindow:true});
     if (!tab?.id) throw new Error("Could not resolve the active test tab");
-    const target = {tabId:tab.id, allFrames:true};
-    await chrome.scripting.executeScript({target, files:["content.js"]});
+    await globalThis.openPencilToggleCapture(tab.id);
   });
+  const pickerViews = () => Promise.all(page.frames().map((candidate) => candidate.evaluate(() => {
+    const host = document.getElementById("__openpencil_capture_host__");
+    if (!host) return "closed";
+    return ["selection", "capturing", "success"].find((name) => !host.shadowRoot.querySelector(`.${name}-view`).hidden);
+  })));
+  await clickToolbarButton();
 
   // A hostile page tries every channel an earlier design exposed to page scripts.
   const pageChannels = await page.evaluate(async (url) => {
@@ -115,7 +120,23 @@ try {
   if (!clipboard.marker || !clipboard.name?.includes("Payout Threshold")) {
     throw new Error(`Loaded extension did not copy the iframe selection: ${JSON.stringify(clipboard)}`);
   }
-  console.log(JSON.stringify({loadedExtension:true, crossOrigin:true, clipboard}));
+  // Clicking the button while one frame shows its success message starts over in every frame.
+  await clickToolbarButton();
+  const reopened = await pickerViews();
+  if (reopened.some((view) => view !== "selection")) throw new Error(`The button left frames out of sync: ${JSON.stringify(reopened)}`);
+
+  // Regression: during the top frame's success message, a click closed the top picker and opened
+  // invisible ones in the iframes.
+  await page.mouse.move(1000, 650);
+  await page.mouse.click(1000, 650);
+  await page.waitForFunction(() => {
+    const host = document.getElementById("__openpencil_capture_host__");
+    return host && !host.shadowRoot.querySelector(".success-view").hidden;
+  }, null, {timeout:30_000});
+  await clickToolbarButton();
+  const closed = await pickerViews();
+  if (closed.some((view) => view !== "closed")) throw new Error(`The button left pickers open: ${JSON.stringify(closed)}`);
+  console.log(JSON.stringify({loadedExtension:true, crossOrigin:true, clipboard, reopened, closed}));
 } finally {
   await context?.close();
   topServer.stop(true);

@@ -73,7 +73,6 @@ Limits of the capture model:
 - A percentage `border-radius` is read as pixels, and `overflow:auto` or `scroll` containers do not clip.
 - Colors outside `rgb`, `oklch`, `oklab` and `lab` are dropped, and transparent text becomes black.
 - `background-repeat`, `background-size` lengths, dashed strokes and `<pre>` whitespace are not preserved.
-- Clicking the toolbar icon during the success message can leave iframes in selection mode. Press `Esc` to stop them.
 
 When a resource cannot be read, or the clipboard is misused:
 

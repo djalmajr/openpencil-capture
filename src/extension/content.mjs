@@ -62,7 +62,7 @@ function selectorFor(element) {
 }
 
 function install() {
-  if (globalThis[CONTROLLER_KEY]) return globalThis[CONTROLLER_KEY].toggle();
+  if (globalThis[CONTROLLER_KEY]) return;
   const isEmbeddedDocument = globalThis.top !== globalThis;
   const pageModifier = pageCaptureModifier(navigator.platform);
   const host = document.createElement("div");
@@ -321,7 +321,7 @@ function install() {
   globalThis.addEventListener("keydown", cancelFromKeyboard, true);
   globalThis.addEventListener("message", onFrameMessage);
   updateOutline();
-  globalThis[CONTROLLER_KEY] = { toggle: teardown, teardown };
+  globalThis[CONTROLLER_KEY] = { teardown };
 }
 
 install();

@@ -32,10 +32,20 @@ function respondWith(work, sendResponse) {
   return true;
 }
 
+// A capture that finishes in one frame closes the pickers of the others, so frames can disagree
+// about being open. The top frame decides for all of them: toggling each frame on its own would
+// leave invisible pickers in iframes, waiting to swallow the next click.
+async function toggleCapture(tabId) {
+  const [top] = await chrome.scripting.executeScript({target:{tabId}, func:() => Boolean(globalThis.__openPencilCaptureController)});
+  await chrome.scripting.executeScript({target:{tabId, allFrames:true}, func:() => globalThis.__openPencilCaptureController?.teardown()});
+  if (!top?.result) await chrome.scripting.executeScript({target:{tabId, allFrames:true}, files:["content.js"]});
+}
+
+// The smoke tests drive the same path the toolbar button does.
+globalThis.openPencilToggleCapture = toggleCapture;
+
 chrome.action.onClicked.addListener(async (tab) => {
-  if (!tab.id) return;
-  const target = { tabId:tab.id, allFrames:true };
-  await chrome.scripting.executeScript({ target, files:["content.js"] });
+  if (tab.id) await toggleCapture(tab.id);
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {

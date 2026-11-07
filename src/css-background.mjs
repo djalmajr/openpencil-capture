@@ -52,13 +52,94 @@ export function resolveLength(token, range) {
   return token.endsWith("%") ? number / 100 * range : number;
 }
 
-// A gradient's interpolation space (`in oklab`) changes how it blends, not its geometry.
-function withoutInterpolation(tokens) {
+// A gradient's interpolation space (`in oklab`, `in oklch longer hue`) changes how it blends, not
+// its geometry: it is read apart from the descriptor.
+function interpolationOf(tokens) {
   const index = tokens.indexOf("in");
-  if (index === -1) return tokens;
-  const hueMethod = ["shorter", "longer", "increasing", "decreasing"].includes(tokens[index + 2]) ? 2 : 0;
-  return [...tokens.slice(0, index), ...tokens.slice(index + 2 + hueMethod + (hueMethod ? 1 : 0))];
+  if (index === -1) return {tokens, space:null};
+  const hue = ["shorter", "longer", "increasing", "decreasing"].includes(tokens[index + 2]) ? tokens[index + 2] : null;
+  return {tokens:[...tokens.slice(0, index), ...tokens.slice(index + 2 + (hue ? 2 : 0))], space:{name:tokens[index + 1], hue:hue || "shorter"}};
 }
+
+const linear = (value) => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+const gamma = (value) => value <= 0.0031308 ? value * 12.92 : 1.055 * Math.max(0, value) ** (1 / 2.4) - 0.055;
+
+function toOklab({r, g, b}) {
+  const [lr, lg, lb] = [r, g, b].map((value) => linear(value / 255));
+  const l = Math.cbrt(0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb);
+  const m = Math.cbrt(0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb);
+  const s = Math.cbrt(0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb);
+  return [0.2104542553 * l + 0.793617785 * m - 0.0040720468 * s, 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s, 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s];
+}
+
+function fromOklab([lightness, a, b]) {
+  const l = (lightness + 0.3963377774 * a + 0.2158037573 * b) ** 3;
+  const m = (lightness - 0.1055613458 * a - 0.0638541728 * b) ** 3;
+  const s = (lightness - 0.0894841775 * a - 1.291485548 * b) ** 3;
+  return [4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s, -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s, -0.0041960863 * l - 0.7034186147 * m + 1.707614701 * s]
+    .map((value) => clamp(gamma(value)) * 255);
+}
+
+// Each space as a way into its coordinates and back; the last coordinate of a polar space is a hue.
+const SPACES = {
+  "srgb-linear":{to:({r, g, b}) => [r, g, b].map((value) => linear(value / 255)), from:(values) => values.map((value) => clamp(gamma(value)) * 255)},
+  oklab:{to:toOklab, from:fromOklab},
+  oklch:{polar:true, to:(color) => {
+    const [l, a, b] = toOklab(color);
+    return [l, Math.hypot(a, b), (Math.atan2(b, a) * 180 / Math.PI + 360) % 360];
+  }, from:([l, c, h]) => fromOklab([l, c * Math.cos(h * Math.PI / 180), c * Math.sin(h * Math.PI / 180)])},
+};
+// lab and lch blend close to their perceptual relatives; hsl and hwb, close to sRGB.
+SPACES.lab = SPACES.oklab;
+SPACES.lch = SPACES.oklch;
+SPACES.xyz = SPACES["xyz-d65"] = SPACES["xyz-d50"] = SPACES["srgb-linear"];
+
+function hueDelta(from, to, method) {
+  let delta = to - from;
+  if (method === "shorter") delta = ((delta + 540) % 360) - 180;
+  else if (method === "longer") delta = delta > 0 && delta < 180 ? delta - 360 : delta > -180 && delta <= 0 ? delta + 360 : delta;
+  else if (method === "increasing") delta = (delta + 360) % 360;
+  else if (method === "decreasing") delta = -((360 - delta) % 360);
+  return delta;
+}
+
+// Premultiplied, like CSS: a transparent end takes the other's coordinates.
+function mixIn(space, left, right, amount, hue) {
+  const definition = SPACES[space];
+  if (!definition) return mix(left, right, amount);
+  const a = left.a + (right.a - left.a) * amount;
+  const from = definition.to(left);
+  const to = definition.to(right);
+  const values = from.map((value, index) => {
+    if (definition.polar && index === 2) return value + hueDelta(value, to[2], hue) * amount;
+    return a > 0 ? (value * left.a + (to[index] * right.a - value * left.a) * amount) / a : value + (to[index] - value) * amount;
+  });
+  const [r, g, b] = definition.from(values);
+  return {r, g, b, a};
+}
+
+const SUBDIVISIONS = 8;
+
+// The editor blends stops in sRGB. A gradient that blends in another space, or bends through a
+// color hint, gets stops in between, so its sRGB blend follows the right curve.
+function curveStops(stops, space) {
+  const curved = [];
+  stops.forEach((stop, index) => {
+    curved.push(stop);
+    const next = stops[index + 1];
+    if (!next || next.position <= stop.position) return;
+    const hint = stop.hint === undefined ? null : clamp((stop.hint - stop.position) / (next.position - stop.position), 1e-4, 1 - 1e-4);
+    if (!space && hint === null) return;
+    for (let step = 1; step < SUBDIVISIONS; step += 1) {
+      const t = step / SUBDIVISIONS;
+      const amount = hint === null ? t : t ** (Math.log(0.5) / Math.log(hint));
+      curved.push({rgba:space ? mixIn(space.name, stop.rgba, next.rgba, amount, space.hue) : mix(stop.rgba, next.rgba, amount), position:stop.position + (next.position - stop.position) * t});
+    }
+  });
+  return curved;
+}
+
+const isLegacyColor = (token) => /^(#|rgba?\(|hsla?\(|hwb\(|[a-z]+$)/i.test(token);
 
 function parseHex(hex) {
   const digits = hex.slice(1);
@@ -105,11 +186,16 @@ function stopPosition(token, length) {
 
 // Color stops with CSS's fix-up: missing ends at 0 and 1, positions never going back, and the
 // ones left out spread evenly between their neighbors. Hints (a lone position) are left out.
-export function parseColorStops(args, length) {
+export function parseColorStops(args, length, space = null) {
   const stops = [];
+  let legacy = true;
   for (const argument of args) {
     const [colorToken, ...positions] = splitTokens(argument);
-    if (stopPosition(colorToken, length) !== undefined && positions.length === 0) continue;
+    if (stopPosition(colorToken, length) !== undefined && positions.length === 0) {
+      if (stops.length) stops.at(-1).hintToken = colorToken;
+      continue;
+    }
+    legacy &&= isLegacyColor(colorToken);
     const color = gradientColor(colorToken);
     if (!color) continue;
     const rgba = parseHex(color);
@@ -134,7 +220,13 @@ export function parseColorStops(args, length) {
       stops[gap].position = stops[before].position + (stops[after].position - stops[before].position) * (gap - before) / (after - before);
     }
   }
-  return stops;
+  for (const stop of stops) {
+    if (stop.hintToken !== undefined) stop.hint = stopPosition(stop.hintToken, length);
+    delete stop.hintToken;
+  }
+  // CSS blends legacy colors in sRGB unless told otherwise, and any other color in oklab.
+  const blend = space || (legacy ? null : {name:"oklab", hue:"shorter"});
+  return curveStops(stops, blend?.name === "srgb" ? null : blend);
 }
 
 const MAX_REPEATED_STOPS = 4096;
@@ -186,7 +278,7 @@ export function linearGradientLength(cssAngle, width, height) {
 
 function parseLinear(args, box, repeating) {
   let angle = 180;
-  const descriptor = withoutInterpolation(splitTokens(args[0]));
+  const {tokens:descriptor, space} = interpolationOf(splitTokens(args[0]));
   if (descriptor[0] === "to") {
     angle = directionAngle(descriptor.slice(1), box.width, box.height);
     args = args.slice(1);
@@ -196,7 +288,7 @@ function parseLinear(args, box, repeating) {
   } else if (descriptor.length === 0) {
     args = args.slice(1);
   }
-  const stops = parseColorStops(args, linearGradientLength(angle, box.width, box.height));
+  const stops = parseColorStops(args, linearGradientLength(angle, box.width, box.height), space);
   if (!stops) return null;
   return {type:"gradient", gradientType:"linear", rotation:round(normalizeDegrees(360 - angle)), colors:spanStops(stops, repeating)};
 }
@@ -232,7 +324,7 @@ function radialRadii(shape, size, center, box) {
 }
 
 function parseRadial(args, box, repeating) {
-  let tokens = withoutInterpolation(splitTokens(args[0]));
+  let {tokens, space} = interpolationOf(splitTokens(args[0]));
   const isDescriptor = tokens.length === 0 || RADIAL_KEYWORDS.has(tokens[0]) || /^-?[\d.]+(px|%)?$/.test(tokens[0]) || /^calc\(/.test(tokens[0]);
   let shape = "ellipse";
   const size = [];
@@ -254,7 +346,7 @@ function parseRadial(args, box, repeating) {
   const radius = radialRadii(shape, size, center, box);
   radius.x = Math.max(radius.x, 0.01);
   radius.y = Math.max(radius.y, 0.01);
-  const stops = parseColorStops(args, radius.x);
+  const stops = parseColorStops(args, radius.x, isDescriptor ? space : null);
   if (!stops) return null;
   return {
     type:"gradient", gradientType:"radial",
@@ -265,7 +357,7 @@ function parseRadial(args, box, repeating) {
 }
 
 function parseConic(args, box, repeating) {
-  let tokens = withoutInterpolation(splitTokens(args[0]));
+  let {tokens, space} = interpolationOf(splitTokens(args[0]));
   let from = 0;
   let center = {x:box.width / 2, y:box.height / 2};
   if (tokens.length === 0 || tokens[0] === "from" || tokens[0] === "at") {
@@ -276,8 +368,10 @@ function parseConic(args, box, repeating) {
       tokens = tokens.slice(0, at);
     }
     if (tokens[0] === "from") from = angleInDegrees(tokens[1]) ?? 0;
+  } else {
+    space = null;
   }
-  const stops = parseColorStops(args, 1);
+  const stops = parseColorStops(args, 1, space);
   if (!stops) return null;
   return {
     type:"gradient", gradientType:"angular", rotation:round(normalizeDegrees(from)),

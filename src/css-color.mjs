@@ -141,8 +141,16 @@ export function colorWithCombinedOpacity(color, ...opacities) {
   return `${expanded.slice(0, 7)}${channelToHex(alpha)}`;
 }
 
+// A gradient keeps a fully transparent stop, with its color: the editor needs it to fade toward.
+// Chromium writes Tailwind's `to-blue-500/0` as `oklab(0 0 0 / 0)`.
 export function gradientColor(value) {
   if (value === "transparent") return "#00000000";
-  const alpha = value.match(/^rgba?\(\s*[\d.]+[,\s]+[\d.]+[,\s]+[\d.]+\s*[,/]\s*([\d.]+)%?\s*\)$/i)?.[1];
-  return alpha !== undefined && Number(alpha) === 0 ? "#00000000" : safeColor(value);
+  const legacy = value.match(/^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)\s*[,/]\s*0%?\s*\)$/i);
+  if (legacy) return `${safeColor(`rgb(${legacy[1]}, ${legacy[2]}, ${legacy[3]})`)}00`;
+  const opaque = value.replace(/\/\s*0%?\s*\)$/, "/ 1)");
+  if (opaque !== value) {
+    const hex = safeColor(opaque);
+    return hex ? `${hex.slice(0, 7)}00` : null;
+  }
+  return safeColor(value);
 }

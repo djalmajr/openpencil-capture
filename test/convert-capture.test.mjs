@@ -418,7 +418,36 @@ describe("convertCaptureToTree", () => {
     const fill = cssBackgroundToFill({rect:{width:10,height:10},attributes:{},styles:{backgroundImage:"linear-gradient(90deg, rgb(0, 0, 0), rgba(0, 0, 0, 0))"}});
     expect(fill.colors.map((stop) => stop.color)).toEqual(["#000000","#00000000"]);
     const modern = cssBackgroundToFill({rect:{width:10,height:10},attributes:{},styles:{backgroundImage:"linear-gradient(90deg, rgb(10 20 30 / 0), rgb(10 20 30 / 0.5))"}});
-    expect(modern.colors.map((stop) => stop.color)).toEqual(["#00000000","#0A141E80"]);
+    expect(modern.colors.map((stop) => stop.color)).toEqual(["#0A141E00","#0A141E80"]);
+  });
+
+  // Regression: Tailwind's `to-blue-500/0` computes to `oklab(0 0 0 / 0)`, which dropped the stop and
+  // with it the whole gradient.
+  test("keeps a transparent stop written in a modern color space", () => {
+    const fill = cssBackgroundToFill({rect:{width:10,height:10},attributes:{},styles:{backgroundImage:"linear-gradient(to right, oklch(0.623 0.214 259.815) 0%, oklab(0 0 0 / 0) 100%)"}});
+    expect(fill.gradientType).toBe("linear");
+    expect(fill.colors.at(-1).color).toMatch(/00$/);
+  });
+
+  // Regression: the default origin (padding box) inside a border made every bordered gradient a tile.
+  test("keeps a bordered gradient a native gradient", () => {
+    const sides = Object.fromEntries(["Top", "Right", "Bottom", "Left"].flatMap((side) => [[`border${side}Width`, "1px"], [`border${side}Style`, "solid"], [`border${side}Color`, "rgb(200, 200, 200)"]]));
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 300, 100], {...sides, backgroundColor:"rgba(0, 0, 0, 0)", backgroundImage:"linear-gradient(90deg, rgb(255, 0, 0), rgb(0, 0, 255))", backgroundRepeat:"repeat", backgroundOrigin:"padding-box", backgroundClip:"border-box", backgroundSize:"auto", backgroundPositionX:"0%", backgroundPositionY:"0%"}]));
+    expect(root.fill).toMatchObject({type:"gradient", gradientType:"linear"});
+  });
+
+  test("places a userSpaceOnUse radial gradient against the shape's own box", () => {
+    const svgNs = {namespace:"http://www.w3.org/2000/svg"};
+    const tree = convertCaptureToTree(ir(
+      ["0", "div", [0, 0, 48, 48]],
+      ["0.0", "svg", [0, 0, 48, 48], {}, {...svgNs, attributes:{viewBox:"0 0 24 24"}}],
+      ["0.0.0", "radialgradient", [0, 0, 0, 0], {}, {...svgNs, attributes:{id:"glow", gradientUnits:"userSpaceOnUse", cx:"12", cy:"6", r:"6"}}],
+      ["0.0.0.0", "stop", [0, 0, 0, 0], {stopColor:"rgb(255, 255, 255)"}, {...svgNs, attributes:{offset:"0"}}],
+      ["0.0.0.1", "stop", [0, 0, 0, 0], {stopColor:"rgb(0, 0, 0)"}, {...svgNs, attributes:{offset:"1"}}],
+      ["0.0.1", "rect", [0, 0, 48, 24], {fill:"url(\"#glow\")", opacity:"1"}, {...svgNs, attributes:{width:"24", height:"12"}}],
+    ));
+    const rect = tree.root.children[0].children.find((child) => child.type === "rectangle");
+    expect(rect.fill).toMatchObject({gradientType:"radial", center:{x:0.5, y:0.5}, radius:{x:0.25, y:0.5}});
   });
 
   // Mutation captured: measuring from the box center puts every stripe out of phase with the browser.

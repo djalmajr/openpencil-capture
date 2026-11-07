@@ -80,20 +80,23 @@ function fontFamilies(value) {
 
 // The first family in `font-family` the browser can draw with: an unavailable one falls back, so
 // text measured with a fallback set as its own family keeps the fallback's width.
-function availableFamily(computed, cache) {
+// Measured in the node's own document, which holds its @font-face rules, and on its own text, so a
+// font limited by `unicode-range` counts only where it covers that text.
+function availableFamily(computed, cache, node, sample) {
   const families = fontFamilies(computed.fontFamily);
-  const context = document.createElement("canvas").getContext("2d");
+  const probe = String(sample || "").trim().slice(0, 64) || FONT_PROBE;
+  const context = node.ownerDocument.createElement("canvas").getContext("2d");
   if (!context) return families[0] || null;
   for (const family of families) {
     if (GENERIC_FAMILIES.has(family.toLowerCase())) return family;
-    const key = `${computed.fontStyle} ${computed.fontWeight} ${family}`;
+    const key = `${computed.fontStyle} ${computed.fontWeight} ${family} ${probe}`;
     if (!cache.has(key)) {
       const quoted = `"${family.replace(/["\\]/g, "\\$&")}"`;
       cache.set(key, ["monospace", "serif", "sans-serif"].some((fallback) => {
         context.font = `${computed.fontStyle} ${computed.fontWeight} 72px ${fallback}`;
-        const base = context.measureText(FONT_PROBE).width;
+        const base = context.measureText(probe).width;
         context.font = `${computed.fontStyle} ${computed.fontWeight} 72px ${quoted}, ${fallback}`;
-        return context.measureText(FONT_PROBE).width !== base;
+        return context.measureText(probe).width !== base;
       }));
     }
     if (cache.get(key)) return family;
@@ -109,8 +112,9 @@ function ellipsisWidth(computed) {
 }
 
 // `origin` is where the node's document places the root: the root's own corner, minus the offset
-// of any iframes in between.
-function directTextSnapshot(node, origin, computed, childNodes) {
+// of any iframes in between. `clip`, in the node's own viewport, is what of its content shows: a
+// character outside it is left out, as the page does not draw it.
+function directTextSnapshot(node, origin, computed, childNodes, clip) {
   const rootRect = origin;
   const nodeRect = node.getBoundingClientRect();
   const textNodes = childNodes.filter((child) => child.nodeType === 3 && child.textContent?.trim());
@@ -166,7 +170,17 @@ function directTextSnapshot(node, origin, computed, childNodes) {
       return {...line,entries};
     });
   }
+  const inside = ({rect}) => {
+    const x = (rect.left + rect.right) / 2;
+    const y = (rect.top + rect.bottom) / 2;
+    return x > clip.left && x < clip.right && y > clip.top && y < clip.bottom;
+  };
   const runs = visibleLines.flatMap((line, index) => {
+    line = {...line, entries:line.entries.filter(inside)};
+    if (!keepsSpaces) {
+      while (line.entries.length && /\s/.test(line.entries[0].character)) line.entries.shift();
+      while (line.entries.length && /\s/.test(line.entries.at(-1).character)) line.entries.pop();
+    }
     if (!line.entries.length) return [];
     const tabSpaces = " ".repeat(Number.parseInt(computed.tabSize, 10) || 8);
     let text = line.entries.map((entry) => entry.character).join("");
@@ -204,9 +218,14 @@ const CLIPPING_OVERFLOW = new Set(["hidden", "clip", "auto", "scroll"]);
 // no while its children show; only its opacity can hide them.
 function isRendered(node) {
   if (typeof node.checkVisibility !== "function") return true;
-  if (node.ownerDocument.defaultView.getComputedStyle(node).display === "contents") return node.parentElement?.checkVisibility({opacityProperty:true}) ?? true;
-  return node.checkVisibility({opacityProperty:true});
+  const view = node.ownerDocument.defaultView;
+  let box = node;
+  while (box && view.getComputedStyle(box).display === "contents") box = box.parentElement || box.getRootNode().host || null;
+  return box ? box.checkVisibility({opacityProperty:true}) : true;
 }
+
+const REPLACED_ELEMENTS = new Set(["img", "input", "textarea", "select", "video", "audio", "iframe", "frame", "canvas", "embed", "object", "br", "hr"]);
+const shift = (rect, x, y) => ({left:rect.left + x, right:rect.right + x, top:rect.top + y, bottom:rect.bottom + y});
 
 const isClear = (color) => !color || color === "transparent" || /^rgba\(.*,\s*0\)$/.test(color);
 
@@ -216,9 +235,9 @@ function canvasBackground(document) {
   const html = document.documentElement;
   const body = document.body;
   const htmlStyle = html && document.defaultView.getComputedStyle(html);
-  if (htmlStyle && (!isClear(htmlStyle.backgroundColor) || htmlStyle.backgroundImage !== "none")) return {element:html, color:htmlStyle.backgroundColor};
+  if (htmlStyle && (!isClear(htmlStyle.backgroundColor) || htmlStyle.backgroundImage !== "none")) return {element:html, color:isClear(htmlStyle.backgroundColor) ? null : htmlStyle.backgroundColor};
   const bodyStyle = body && document.defaultView.getComputedStyle(body);
-  if (bodyStyle && (!isClear(bodyStyle.backgroundColor) || bodyStyle.backgroundImage !== "none")) return {element:body, color:bodyStyle.backgroundColor};
+  if (bodyStyle && (!isClear(bodyStyle.backgroundColor) || bodyStyle.backgroundImage !== "none")) return {element:body, color:isClear(bodyStyle.backgroundColor) ? null : bodyStyle.backgroundColor};
   return null;
 }
 
@@ -305,15 +324,23 @@ function pseudoBox(node, computed) {
   if (!["absolute", "fixed"].includes(computed.position)) return null;
   const view = node.ownerDocument.defaultView;
   const number = (value) => Number.parseFloat(value) || 0;
-  let origin = {x:0, y:0};
-  if (computed.position === "absolute") {
-    const block = view.getComputedStyle(node).position !== "static" ? node : node.offsetParent;
-    if (block && block !== node.ownerDocument.body) {
-      const rect = block.getBoundingClientRect();
-      origin = {x:rect.left + block.clientLeft, y:rect.top + block.clientTop};
-    } else {
-      origin = {x:-view.scrollX, y:-view.scrollY};
+  // The containing block: the nearest box that is positioned (for absolute) or that transforms,
+  // filters or contains its descendants (for both); without one, the page or the viewport.
+  const fixed = computed.position === "fixed";
+  let block = null;
+  for (let element = node; element; element = element.parentElement || element.getRootNode().host || null) {
+    const style = view.getComputedStyle(element);
+    const traps = style.transform !== "none" || style.filter !== "none" || style.perspective !== "none" || style.backdropFilter !== "none"
+      || /paint|layout|strict|content/.test(style.contain || "") || /transform|filter|perspective/.test(style.willChange || "");
+    if (traps || (!fixed && style.position !== "static")) {
+      block = element;
+      break;
     }
+  }
+  let origin = fixed ? {x:0, y:0} : {x:-view.scrollX, y:-view.scrollY};
+  if (block) {
+    const rect = block.getBoundingClientRect();
+    origin = {x:rect.left + block.clientLeft, y:rect.top + block.clientTop};
   }
   const extraX = computed.boxSizing === "border-box" ? 0 : ["paddingLeft", "paddingRight", "borderLeftWidth", "borderRightWidth"].reduce((total, key) => total + number(computed[key]), 0);
   const extraY = computed.boxSizing === "border-box" ? 0 : ["paddingTop", "paddingBottom", "borderTopWidth", "borderBottomWidth"].reduce((total, key) => total + number(computed[key]), 0);
@@ -378,14 +405,16 @@ export async function captureElement(root, options = {}) {
     // `content-visibility:hidden` renders the element's box and skips everything inside it.
     const shown = !inResources && computed.visibility === "visible" && computed.contentVisibility !== "hidden";
     const masked = isMaskedByCss(computed);
-    const childNodes = flatChildNodes(node, shadowRootOf);
-    const snapshot = directTextSnapshot(node, {x:rootRect.x - offset.x, y:rootRect.y - offset.y}, computed, childNodes);
-    const visibleRuns = shown ? snapshot.textRuns.filter((run) => intersects({
-      left:run.rect.x + rootRect.x, top:run.rect.y + rootRect.y,
-      right:run.rect.x + rootRect.x + run.rect.width, bottom:run.rect.y + rootRect.y + run.rect.height,
-    }, clip)) : [];
-    const visibleSnapshot = visibleRuns.length === snapshot.textRuns.length ? snapshot : textFromRuns(visibleRuns);
-    const { text, textRect, textRuns } = masked ? maskSnapshot(visibleSnapshot) : visibleSnapshot;
+    // A closed <details> renders its first <summary> and nothing else, text included.
+    const closedDetails = node.localName === "details" && !node.open;
+    const childNodes = closedDetails
+      ? Array.from(node.children).filter((child) => child.localName === "summary").slice(0, 1)
+      : flatChildNodes(node, shadowRootOf);
+    const ownClip = contentClip(computed, box, clip);
+    const snapshot = shown
+      ? directTextSnapshot(node, {x:rootRect.x - offset.x, y:rootRect.y - offset.y}, computed, childNodes, shift(ownClip, -offset.x, -offset.y))
+      : textFromRuns([]);
+    const { text, textRect, textRuns } = masked ? maskSnapshot(snapshot) : snapshot;
     const attributes = Object.fromEntries(Array.from(node.attributes)
       .filter((attribute) => CAPTURED_ATTRIBUTES.has(attribute.name))
       .map((attribute) => [attribute.name, attribute.value]));
@@ -419,19 +448,20 @@ export async function captureElement(root, options = {}) {
     }
     if (context.propagated === node) attributes.backgroundPropagated = true;
     const frame = frameDocument(node);
-    const frameCanvas = frame && canvasBackground(frame);
-    if (frameCanvas) attributes.canvasBackground = frameCanvas.color;
+    const frameCanvas = frame && shown && canvasBackground(frame);
+    if (frameCanvas?.color) attributes.canvasBackground = frameCanvas.color;
     nodes.push({
       path, parentPath, tag: node.tagName.toLowerCase(), namespace: node.namespaceURI,
       role: node.getAttribute("role"),
       name: node.getAttribute("data-slot") || node.getAttribute("aria-label") || text || node.tagName.toLowerCase(),
       text, textRect, textRuns,
-      ...(text || attributes.value || attributes.placeholder || attributes.maskedValue ? {fontFamily:availableFamily(computed, fontCache)} : {}),
+      ...(text || attributes.value || attributes.placeholder || attributes.maskedValue ? {fontFamily:availableFamily(computed, fontCache, node, text || attributes.value || attributes.placeholder)} : {}),
       rect: rectIn(raw, offset),
       styles: Object.fromEntries(CAPTURED_STYLE_KEYS.map((key) => [key, computed[key]])),
       attributes,
     });
-    if (frame) {
+    // `visibility` does not inherit into a frame's document, so a hidden frame hides it here.
+    if (frame && shown) {
       // A frame's document lays out in its own viewport, which starts at the frame's content box.
       const left = box.left + node.clientLeft + Number.parseFloat(computed.paddingLeft || 0);
       const top = box.top + node.clientTop + Number.parseFloat(computed.paddingTop || 0);
@@ -440,10 +470,14 @@ export async function captureElement(root, options = {}) {
       visit(frame.documentElement, `${path}.0`, path, {inResources:false, offset:{x:left, y:top}, clip:frameClip, canvas:frameClip, propagated:frameCanvas?.element});
       return;
     }
-    const childContext = {...context, inResources, clip:contentClip(computed, box, clip)};
-    if (!isSvg && !inResources) visitPseudo(node, "::before", path, childContext);
+    if (frame) return;
+    const childContext = {...context, inResources, clip:ownClip};
+    // Pseudo-elements are part of the content `content-visibility:hidden` skips; replaced elements
+    // such as <img> and <input> draw none.
+    const drawsPseudo = !isSvg && !inResources && computed.contentVisibility !== "hidden" && !closedDetails && !REPLACED_ELEMENTS.has(tag);
+    if (drawsPseudo) visitPseudo(node, "::before", path, childContext);
     childNodes.filter((child) => child.nodeType === 1).forEach((child, index) => visit(child, `${path}.${index}`, path, childContext));
-    if (!isSvg && !inResources) visitPseudo(node, "::after", path, childContext);
+    if (drawsPseudo) visitPseudo(node, "::after", path, childContext);
   };
 
   const visitPseudo = (node, pseudo, parentPath, context) => {
@@ -456,7 +490,8 @@ export async function captureElement(root, options = {}) {
     if (!intersects(box, computed.position === "fixed" ? context.canvas : context.clip)) return;
     const rect = rectIn(raw, context.offset);
     // Only quoted text: counters, attr() and images have no string the capture can trust.
-    const quoted = computed.content.match(/^"((?:[^"\\]|\\.)*)"$/)?.[1]?.replace(/\\(.)/g, "$1").trim();
+    const literal = computed.content.match(/^"((?:[^"\\]|\\.)*)"$/)?.[1]?.replace(/\\(.)/g, "$1").trim();
+    const quoted = literal && isMaskedByCss(computed) ? maskText(literal) : literal;
     const number = (value) => Number.parseFloat(value) || 0;
     const textRect = quoted ? {
       x:rect.x + number(computed.borderLeftWidth) + number(computed.paddingLeft), y:rect.y + number(computed.borderTopWidth) + number(computed.paddingTop),
@@ -466,7 +501,7 @@ export async function captureElement(root, options = {}) {
     nodes.push({
       path:`${parentPath}.${pseudo.slice(2)}`, parentPath, tag:pseudo, namespace:"http://www.w3.org/1999/xhtml", role:null,
       name:pseudo, text:quoted || null, textRect, textRuns:[],
-      ...(quoted ? {fontFamily:availableFamily(computed, fontCache)} : {}),
+      ...(quoted ? {fontFamily:availableFamily(computed, fontCache, node, literal)} : {}),
       rect, styles:Object.fromEntries(CAPTURED_STYLE_KEYS.map((key) => [key, computed[key]])), attributes:{}, synthetic:"pseudo",
     });
   };

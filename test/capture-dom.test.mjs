@@ -175,9 +175,10 @@ describe("baking filters into images", () => {
         context.drawImage(image, 0, 0, 1, 1);
         return Array.from(context.getImageData(0, 0, 1, 1).data);
       };
-      return {inverted:await pixelOf("invert(1)"), refused:await pixelOf("url(#x)")};
+      return {inverted:await pixelOf("invert(1)"), refused:await pixelOf("grayscale(1)")};
     }, {source, red});
     expect(pixel.inverted).toEqual([0, 255, 255, 255]);
+    // Mutation captured: without the allow-list the canvas would gray the pixel.
     expect(pixel.refused).toEqual([255, 0, 0, 255]);
   });
 });
@@ -189,5 +190,62 @@ describe("pseudo-elements", () => {
     const {root} = convertCaptureToTree(capture);
     expect(root.children[0]).toMatchObject({name:"After · Decoration", fill:"#DC0000", y:4});
     expect(root.children[0].children[0]).toMatchObject({type:"text", content:"New"});
+  });
+});
+
+// Regressions found in review: each of these showed text the page does not draw.
+describe("what a capture may contain, at the edges", () => {
+  test("leaves out text written straight inside a closed <details>", async () => {
+    const capture = await captureHtml(`<div id="root"><details><summary>S</summary>DIRECTSECRET</details></div>`);
+    expect(leaked(capture, ["DIRECTSECRET"])).toEqual([]);
+    expect(capture.label).toBe("S");
+  });
+
+  test("does not enter a frame the page hides", async () => {
+    const frame = `<iframe srcdoc="<p>frame-secret</p><input value='frame-input-secret'>" style="width:200px;height:80px"></iframe>`;
+    for (const html of [`<div id="root"><div style="visibility:hidden">${frame}</div></div>`, `<div id="root">${frame.replace('style="', 'style="visibility:hidden;')}</div>`]) {
+      expect(leaked(await captureHtml(html), ["frame-secret", "frame-input-secret"])).toEqual([]);
+    }
+  });
+
+  test("clips an element's own text by its own overflow, character by character", async () => {
+    const capture = await captureHtml(`<div id="root">
+      <div style="height:20px;line-height:20px;overflow:hidden">line one<br>SECONDLINEHIDDEN</div>
+      <div style="height:0;overflow:hidden">ZEROHEIGHT</div>
+      <div style="width:120px;overflow:hidden;white-space:nowrap;font:16px monospace">visible ZZZZZZZZZZZZZZZZ HIDDENTAIL</div>
+    </div>`);
+    expect(leaked(capture, ["SECONDLINEHIDDEN", "ZEROHEIGHT", "HIDDENTAIL"])).toEqual([]);
+    expect(leaked(capture, ["line one", "visible"])).toEqual(["line one", "visible"]);
+  });
+
+  test("leaves out the pseudo-elements of content the page skips, and masks masked ones", async () => {
+    const capture = await captureHtml(`<style>
+      #cv{position:relative;content-visibility:hidden;width:100px;height:40px}
+      #cv::after{content:"PSEUDOSECRET";position:absolute;top:0;left:0;width:80px;height:20px;background:red}
+      #mask{position:relative;-webkit-text-security:disc;width:100px;height:40px}
+      #mask::after{content:"MASKEDPSEUDO";position:absolute;top:0;left:0;width:80px;height:20px}
+    </style><div id="root"><div id="cv"></div><div id="mask"></div></div>`);
+    expect(leaked(capture, ["PSEUDOSECRET", "MASKEDPSEUDO"])).toEqual([]);
+    expect(capture.nodes.find((node) => node.tag === "::after")?.text).toBe("••••••••••••");
+  });
+
+  // Regression: Astro islands nest display:contents wrappers, and their content was dropped.
+  test("keeps content inside nested display:contents wrappers", async () => {
+    const capture = await captureHtml(`<div id="root"><astro-island style="display:contents"><astro-slot style="display:contents"><p>island</p></astro-slot></astro-island></div>`);
+    expect(capture.nodes.filter((node) => node.text).map((node) => node.text)).toEqual(["island"]);
+  });
+
+  test("finds a font declared inside a frame, and one limited to the characters it covers", async () => {
+    const inter = (await readFile(new URL("../node_modules/@open-pencil/core/assets/Inter-Regular.ttf", import.meta.url))).toString("base64");
+    const face = (family, range = "") => `@font-face{font-family:${family};src:url(data:font/ttf;base64,${inter})${range}}`;
+    const capture = await captureHtml(`<style>${face("SubFont", ";unicode-range:U+0400-04FF")}</style>
+      <div id="root"><p style="font-family:SubFont, serif">Привет</p><p style="font-family:SubFont, serif">Latin</p>
+      <iframe srcdoc="<style>${face("FrameFont")}</style><p style='font-family:FrameFont, serif'>Framed</p>" style="width:200px;height:60px"></iframe></div>`, "#root", {before:async () => {
+      const frame = document.querySelector("iframe");
+      if (!frame.contentDocument?.body) await new Promise((resolve) => frame.addEventListener("load", resolve, {once:true}));
+      await Promise.all([...document.fonts].map((font) => font.load()));
+      await Promise.all([...frame.contentDocument.fonts].map((font) => font.load()));
+    }});
+    expect(capture.nodes.filter((node) => node.text).map((node) => [node.text, node.fontFamily])).toEqual([["Привет", "SubFont"], ["Latin", "serif"], ["Framed", "FrameFont"]]);
   });
 });

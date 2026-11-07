@@ -513,8 +513,11 @@ export function cssBackgroundLayers(styles, width, height, {baseUrl, imageSizes 
     const tileSize = resolveSize(sizeValue, area, null);
     const placed = placeImage({area, clip, size:tileSize, position, repeat});
     if (!placed) return;
-    const tiled = placed.repeats && (placed.image.width < placed.region.width - 1 || placed.image.height < placed.region.height - 1
-      || placed.image.x > 0.5 || placed.image.y > 0.5);
+    // A gradient sized to its positioning area repeats only into the border strip, where a border
+    // usually covers it: it stays a native gradient. One smaller than its area tiles.
+    const offsetX = position.x(area.width - tileSize.width);
+    const offsetY = position.y(area.height - tileSize.height);
+    const tiled = placed.repeats && (tileSize.width < area.width - 1 || tileSize.height < area.height - 1 || Math.abs(offsetX) > 0.5 || Math.abs(offsetY) > 0.5);
     if (tiled) {
       const gradient = parseCssGradient(value, tileSize);
       const url = gradient && rasterizeGradientTile(gradient, tileSize.width, tileSize.height);
@@ -570,12 +573,14 @@ export function encodePng(width, height, rgba) {
 }
 
 const TILE_SCALE = 2;
-const MAX_TILE_PIXELS = 1024;
+const MAX_TILE_SIDE = 1024;
+// Every pixel is computed in script, on the page's thread in the extension.
+const MAX_TILE_AREA = 512 * 512;
 
 // The editor cannot repeat a gradient, so a tiled one (a dot grid, a checkerboard) becomes a
 // repeating image of one tile, drawn at twice its size.
 export function rasterizeGradientTile(gradient, width, height) {
-  const scale = Math.min(TILE_SCALE, MAX_TILE_PIXELS / Math.max(width, height, 1));
+  const scale = Math.min(TILE_SCALE, MAX_TILE_SIDE / Math.max(width, height, 1), Math.sqrt(MAX_TILE_AREA / Math.max(width * height, 1)));
   const pixelsWide = Math.max(1, Math.round(width * scale));
   const pixelsHigh = Math.max(1, Math.round(height * scale));
   const stops = gradient.colors.map((stop) => ({rgba:parseHex(stop.color), position:stop.position}));

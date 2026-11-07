@@ -68,7 +68,7 @@ Images and canvas pixels travel inside the clipboard, so pasting needs no networ
 
 ### Sensitive values
 
-Values the page masks paste as bullets, both `type=password` fields and anything using `-webkit-text-security`. Nothing the page does not render is read: content under `display:none`, `opacity:0` or `content-visibility:hidden` (a closed `<details>`, `hidden=until-found`), text under `visibility:hidden`, `type=hidden` fields, and text or control values moved off the page or clipped out of sight by an `overflow` container inside the selection.
+Values the page masks paste as bullets, both `type=password` fields and anything using `-webkit-text-security`. Nothing the page does not render is read: content under `display:none`, `opacity:0` or `content-visibility:hidden` (`hidden=until-found`), everything in a closed `<details>` but its summary, text under `visibility:hidden`, a hidden frame, `type=hidden` fields, and text or control values moved off the page or clipped out of sight, character by character, by an `overflow` box inside the selection.
 
 ### Known limitations
 

@@ -175,9 +175,18 @@ function shadowRingBorder(shadows) {
   return ring ? {stroke:ring.color,strokeWidth:ring.spread,strokeAlignment:"inner"} : {};
 }
 
-function graphicPaint(node, strokeScale = 1, paintServers = new Map()) {
+// A gradient in `userSpaceOnUse` is placed in the SVG's coordinates; the fill's geometry is in
+// fractions of the shape's box, so its center and radius are measured against that box.
+function resolvePaintServer(server, box) {
+  if (!server?.userSpace || !box || !(box.width > 0 && box.height > 0)) return server;
+  if (server.gradientType !== "radial") return server;
+  const {cx, cy, r} = server.userSpace;
+  return {...server, center:{x:round((cx - box.x) / box.width, 5), y:round((cy - box.y) / box.height, 5)}, radius:{x:round(r / box.width, 5), y:round(r / box.height, 5)}};
+}
+
+function graphicPaint(node, strokeScale = 1, paintServers = new Map(), userBox = null) {
   const paintReference = node.styles.fill?.match(/^url\(["']?#([^"')]+)["']?\)$/i)?.[1];
-  const referencedFill = paintReference ? paintServers.get(paintReference) : null;
+  const referencedFill = paintReference ? resolvePaintServer(paintServers.get(paintReference), userBox) : null;
   const fill = referencedFill
     ? {...referencedFill,colors:referencedFill.colors.map((stop) => ({...stop,color:colorWithCombinedOpacity(stop.color,node.styles.fillOpacity)}))}
     : colorWithOpacity(safeColor(node.styles.fill), node.styles.fillOpacity);
@@ -516,7 +525,13 @@ function svgGraphic(node, parent, byPath, paintServers) {
   // Lines, polylines and polygons are drawn in the SVG's own coordinates, and so is a primitive
   // that is turned, or copied by a <use> (its box is the <use>'s, not its own).
   const asPath = ["path", "line", "polyline", "polygon"].includes(node.tag) || node.synthetic === "use" || hasRotation(transform);
-  const paint = graphicPaint(node, strokeScale * (asPath ? transformScale : 1), paintServers);
+  // The shape's box in the SVG's own coordinates, through the viewBox's letterboxed scale.
+  const userBox = svg && strokeScale > 0 ? {
+    x:viewBox[0] + (node.rect.x - svg.rect.x - (svg.rect.width - viewBox[2] * strokeScale) / 2) / strokeScale,
+    y:viewBox[1] + (node.rect.y - svg.rect.y - (svg.rect.height - viewBox[3] * strokeScale) / 2) / strokeScale,
+    width:node.rect.width / strokeScale, height:node.rect.height / strokeScale,
+  } : null;
+  const paint = graphicPaint(node, strokeScale * (asPath ? transformScale : 1), paintServers, userBox);
   const base = { name:semanticLayerName(node), layoutPosition:"absolute", ...(asPath ? svgRelativeRect : primitiveRect), ...paint };
   if (asPath) {
     const geometry = primitivePath(node, viewBox);
@@ -584,7 +599,10 @@ function svgPaintServers(capture, childPaths, byPath) {
     if (stops.length < 2) continue;
     if (node.tag === "radialgradient") {
       const radius = fraction(node.attributes.r, 0.5);
-      servers.set(node.attributes.id, {type:"gradient", gradientType:"radial", center:{x:fraction(node.attributes.cx, 0.5), y:fraction(node.attributes.cy, 0.5)}, radius:{x:radius, y:radius}, colors:stops});
+      const userSpace = node.attributes.gradientUnits === "userSpaceOnUse"
+        ? {cx:px(node.attributes.cx, 0), cy:px(node.attributes.cy, 0), r:px(node.attributes.r, 0)}
+        : null;
+      servers.set(node.attributes.id, {type:"gradient", gradientType:"radial", center:{x:fraction(node.attributes.cx, 0.5), y:fraction(node.attributes.cy, 0.5)}, radius:{x:radius, y:radius}, colors:stops, ...(userSpace ? {userSpace} : {})});
       continue;
     }
     const x1 = fraction(node.attributes.x1, 0); const y1 = fraction(node.attributes.y1, 0);

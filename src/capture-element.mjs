@@ -312,11 +312,126 @@ function ownTransform(element) {
   return consolidated ? matrixOf(consolidated.matrix) : [1, 0, 0, 1, 0, 0];
 }
 
-function useTarget(node) {
-  const href = node.getAttribute("href") || node.getAttributeNS("http://www.w3.org/1999/xlink", "href");
+const useHref = (node) => node.getAttribute("href") || node.getAttributeNS("http://www.w3.org/1999/xlink", "href");
+
+// The file an external <use> points into, when the browser draws it: same origin only.
+function externalUseFile(node) {
+  const href = useHref(node);
+  if (!href || href.startsWith("#")) return null;
+  try {
+    const url = new URL(href, node.ownerDocument.baseURI);
+    if (url.origin !== new URL(node.ownerDocument.URL).origin || !url.hash) return null;
+    return {file:url.href.slice(0, -url.hash.length), id:decodeURIComponent(url.hash.slice(1))};
+  } catch {
+    return null;
+  }
+}
+
+function useTarget(node, externals) {
+  const href = useHref(node);
+  const external = externalUseFile(node);
+  if (external) return externals.get(external.file)?.getElementById(external.id) || null;
   if (!href?.startsWith("#")) return null;
   const id = href.slice(1);
   return node.getRootNode().getElementById?.(id) || node.ownerDocument.getElementById(id);
+}
+
+const EXTERNAL_FETCH_TIMEOUT_MS = 3000;
+
+// The files the selection's external <use> elements show, which the browser loaded to draw them,
+// parsed; a file that does not come back as SVG is left out.
+async function loadUseFiles(root, shadowRootOf) {
+  const uses = [];
+  const collect = (scope) => {
+    for (const element of scope.querySelectorAll("*")) {
+      if (element.localName === "use" && element.namespaceURI === SVG_NAMESPACE) uses.push(element);
+      const shadow = shadowRootOf(element);
+      if (shadow) collect(shadow);
+    }
+  };
+  if (root.localName === "use") uses.push(root);
+  collect(root);
+  const files = new Set(uses.map((use) => externalUseFile(use)?.file).filter(Boolean));
+  const documents = new Map();
+  await Promise.all(Array.from(files, async (file) => {
+    try {
+      const response = await fetch(file, {credentials:"same-origin", cache:"force-cache", signal:AbortSignal.timeout(EXTERNAL_FETCH_TIMEOUT_MS)});
+      if (!response.ok) return;
+      const parsed = new DOMParser().parseFromString(await response.text(), "image/svg+xml");
+      if (parsed.documentElement?.namespaceURI === SVG_NAMESPACE) documents.set(file, parsed);
+    } catch {}
+  }));
+  return documents;
+}
+
+const SVG_PRESENTATION = {
+  fill:"fill", fillOpacity:"fill-opacity", fillRule:"fill-rule", stroke:"stroke", strokeWidth:"stroke-width", strokeOpacity:"stroke-opacity",
+  strokeDasharray:"stroke-dasharray", strokeDashoffset:"stroke-dashoffset", strokeLinecap:"stroke-linecap", strokeLinejoin:"stroke-linejoin",
+  opacity:"opacity", display:"display", visibility:"visibility", color:"color", stopColor:"stop-color", stopOpacity:"stop-opacity",
+};
+const INHERITED_PRESENTATION = new Set(["fill", "fillOpacity", "fillRule", "stroke", "strokeWidth", "strokeOpacity", "strokeDasharray", "strokeDashoffset", "strokeLinecap", "strokeLinejoin", "visibility", "color"]);
+const SVG_INITIAL = {fill:"rgb(0, 0, 0)", fillOpacity:"1", fillRule:"nonzero", stroke:"none", strokeWidth:"1px", strokeOpacity:"1", strokeDasharray:"none", strokeDashoffset:"0px", strokeLinecap:"butt", strokeLinejoin:"miter", opacity:"1", display:"inline", visibility:"visible", stopColor:"rgb(0, 0, 0)", stopOpacity:"1"};
+
+/**
+ * The styles of an element in a file a <use> shows, which no browser computed: the file's own
+ * style rules, its presentation attributes beneath them and its inline style above, then what it
+ * inherits. Colors are normalized through a canvas, as a computed style would give them.
+ */
+function externalStyles(element, inherited, page) {
+  const declared = {};
+  for (const [key, attribute] of Object.entries(SVG_PRESENTATION)) {
+    const value = element.getAttribute(attribute);
+    if (value != null) declared[key] = value.trim();
+  }
+  for (const sheet of element.ownerDocument.querySelectorAll("style")) {
+    let rules = [];
+    try {
+      const parsed = new page.defaultView.CSSStyleSheet();
+      parsed.replaceSync(sheet.textContent);
+      rules = Array.from(parsed.cssRules);
+    } catch {}
+    for (const rule of rules) {
+      let matches = false;
+      try { matches = Boolean(rule.selectorText) && element.matches(rule.selectorText); } catch {}
+      if (!matches) continue;
+      for (const [key, attribute] of Object.entries(SVG_PRESENTATION)) {
+        const value = rule.style.getPropertyValue(attribute);
+        if (value) declared[key] = value.trim();
+      }
+    }
+  }
+  const inline = element.getAttribute("style");
+  if (inline) {
+    const holder = page.createElement("span");
+    holder.setAttribute("style", inline);
+    for (const [key, attribute] of Object.entries(SVG_PRESENTATION)) {
+      const value = holder.style.getPropertyValue(attribute);
+      if (value) declared[key] = value.trim();
+    }
+  }
+  const context = page.createElement("canvas").getContext("2d");
+  const color = (value, fallback) => {
+    if (!value || value === "none" || /^url\(/i.test(value)) return value;
+    if (/^currentcolor$/i.test(value)) return fallback;
+    context.fillStyle = "#010203";
+    context.fillStyle = value;
+    const normalized = context.fillStyle;
+    if (normalized === "#010203" && !/^#010203$/i.test(value)) return value;
+    if (normalized.startsWith("#")) {
+      const [r, g, b] = [1, 3, 5].map((index) => Number.parseInt(normalized.slice(index, index + 2), 16));
+      return `rgb(${r}, ${g}, ${b})`;
+    }
+    return normalized;
+  };
+  const resolved = {};
+  for (const key of Object.keys(SVG_PRESENTATION)) {
+    const value = declared[key] === "inherit" || (declared[key] === undefined && INHERITED_PRESENTATION.has(key)) ? inherited[key] : declared[key];
+    resolved[key] = value ?? SVG_INITIAL[key];
+  }
+  resolved.color = color(resolved.color, inherited.color) || inherited.color;
+  for (const key of ["fill", "stroke", "stopColor"]) resolved[key] = color(resolved[key], resolved.color);
+  if (/^[\d.]+$/.test(resolved.strokeWidth)) resolved.strokeWidth = `${resolved.strokeWidth}px`;
+  return {...inherited, ...resolved};
 }
 
 const measureContexts = new WeakMap();
@@ -586,6 +701,7 @@ export async function captureElement(root, options = {}) {
   const nodes = [];
   const fontCache = new Map();
   const shadowRootOf = options.shadowRootOf || ((element) => element.shadowRoot);
+  const useFiles = await loadUseFiles(root, shadowRootOf);
   const rectIn = (raw, offset) => ({x:raw.x + offset.x - rootRect.x, y:raw.y + offset.y - rootRect.y, width:raw.width, height:raw.height});
   const visit = (node, path, parentPath, context) => {
     const tag = node.localName;
@@ -766,7 +882,7 @@ export async function captureElement(root, options = {}) {
   // read. The capture rebuilds that copy as an <svg> viewport holding the referenced graphics, each
   // with its transform into that viewport and the styles it inherits from the <use>.
   const visitUse = (node, path, parentPath, context) => {
-    const target = useTarget(node);
+    const target = useTarget(node, useFiles);
     const owner = node.ownerSVGElement;
     const screen = node.getScreenCTM?.();
     if (!target || !owner || !screen) return;
@@ -793,6 +909,7 @@ export async function captureElement(root, options = {}) {
       : `${ownerBox?.x || 0} ${ownerBox?.y || 0} ${ownerWidth} ${ownerHeight}`;
     const base = isViewport ? [1, 0, 0, 1, 0, 0] : multiplyMatrices(matrixOf(owner.getScreenCTM().inverse().multiply(screen)), [1, 0, 0, 1, x, y]);
     const styles = (element, inherited) => {
+      if (element.ownerDocument !== node.ownerDocument) return externalStyles(element, inherited, node.ownerDocument);
       const computed = styleOf(element);
       const parent = element.parentElement ? styleOf(element.parentElement) : null;
       const resolved = Object.fromEntries(CAPTURED_STYLE_KEYS.map((key) => [key,

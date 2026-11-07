@@ -11,11 +11,24 @@ export function useBrowser() {
     state.script = await captureBundle();
   });
   afterAll(() => state.browser?.close());
-  const captureHtml = async function captureHtml(html, selector = "#root", {viewport = {width:800, height:600}, before, screenshot = false} = {}) {
+  // `files` serves the page and those paths from https://example.test/, so they share its origin.
+  // `requests` collects every url asked for while the capture runs, after the page has loaded.
+  const captureHtml = async function captureHtml(html, selector = "#root", {viewport = {width:800, height:600}, before, screenshot = false, files = null, requests = null} = {}) {
     const page = await state.browser.newPage({viewport, deviceScaleFactor:1});
     try {
-      await page.setContent(`<!doctype html><html><body style="margin:0">${html}</body></html>`, {waitUntil:"load"});
+      const document = `<!doctype html><html><body style="margin:0">${html}</body></html>`;
+      if (files) {
+        await page.route("https://example.test/**", (route) => {
+          const path = new URL(route.request().url()).pathname;
+          if (path === "/page") return route.fulfill({contentType:"text/html", body:document});
+          return files[path] ? route.fulfill({contentType:"image/svg+xml", body:files[path]}) : route.fulfill({status:404, body:""});
+        });
+        await page.goto("https://example.test/page", {waitUntil:"load"});
+      } else {
+        await page.setContent(document, {waitUntil:"load"});
+      }
       if (before) await page.evaluate(before);
+      if (requests) page.on("request", (request) => requests.push(request.url()));
       await page.addScriptTag({content:state.script});
       const png = screenshot ? await page.locator(selector).screenshot({animations:"disabled"}) : null;
       const capture = await page.evaluate((selector) => globalThis.OpenPencilCapture.captureElement(document.querySelector(selector), {url:"https://example.test/page", capturedAt:"2026-11-07T00:00:00.000Z"}), selector);

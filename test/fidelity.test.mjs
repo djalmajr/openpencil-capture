@@ -23,8 +23,8 @@ const box = (style, inner = "") => `<div id="root" style="width:160px;height:96p
 // The browser's pixels against the editor's, after capture and paste. A threshold of 1.5% of the
 // channel range allows for antialiasing and image filtering, but not a gradient running the wrong
 // way, a misplaced stop, or an image in the wrong place.
-async function fidelity(html, before, {crop = false} = {}) {
-  const {capture, png} = await captureHtml(html, "#root", {screenshot:true, before});
+async function fidelity(html, before, {crop = false, files = null} = {}) {
+  const {capture, png} = await captureHtml(html, "#root", {screenshot:true, before, files});
   const rendered = await renderInEditor(capture);
   const page = await decodePng(png);
   const editor = await decodePng(await rendered.render());
@@ -45,6 +45,12 @@ function cropImage(image, width, height, at) {
 }
 
 const THRESHOLD = 0.015;
+
+// A sprite sheet in its own file, with a style rule, presentation attributes, inline style and
+// currentColor, as icon sets ship them.
+const SPRITE_FILES = {"/icons.svg":`<svg xmlns="http://www.w3.org/2000/svg"><style>.accent{fill:rgb(240, 160, 0)}</style>`
+  + `<symbol id="badge" viewBox="0 0 24 24"><rect x="2" y="2" width="20" height="12" fill="currentColor"/><circle class="accent" cx="12" cy="18" r="4"/><path d="M4 22 H20" stroke="rgb(200, 0, 60)" style="stroke-width:2"/></symbol>`
+  + `<g id="plain" transform="translate(4 4)"><rect width="10" height="10" fill="teal"/></g></svg>`};
 
 describe("the pasted design looks like the page", () => {
   const cases = {
@@ -75,6 +81,7 @@ describe("the pasted design looks like the page", () => {
     "a same-origin frame": box("background:rgb(255, 255, 255)", `<iframe srcdoc="<body style='margin:0;background:rgb(250, 240, 200)'><div style='margin:10px;width:60px;height:30px;background:rgb(200, 40, 40)'></div></body>" style="display:block;width:140px;height:76px;margin:6px;border:4px solid rgb(40, 40, 40)"></iframe>`),
     "a sprite drawn through <use>": `<svg style="display:none"><symbol id="mark" viewBox="0 0 24 24"><path d="M2 2 H22 V12 H2 Z" fill="currentColor"/><circle cx="12" cy="18" r="4" fill="rgb(255, 160, 0)"/></symbol></svg>`
       + box("background:rgb(255, 255, 255);color:rgb(40, 90, 220)", `<svg width="96" height="96" style="display:block;margin-left:32px"><use href="#mark"/></svg>`),
+    "a sprite drawn through <use> from another file": box("background:rgb(255, 255, 255);color:rgb(40, 90, 220)", `<svg width="96" height="96" style="display:block;margin-left:32px"><use href="/icons.svg#badge"/></svg><svg width="40" height="40" viewBox="0 0 20 20" style="position:absolute;left:4px;top:4px"><use href="icons.svg#plain"/></svg>`),
     "SVG shapes inside turned and moved groups": box("background:rgb(255, 255, 255)", `<svg width="160" height="96" viewBox="0 0 80 48" style="display:block"><g transform="translate(10 4)"><path d="M0 0 H20 V10 H0 Z" fill="rgb(0, 140, 200)"/></g><g transform="rotate(30 55 24)"><rect x="45" y="18" width="20" height="12" fill="rgb(220, 60, 60)"/></g></svg>`),
     "an SVG line from bottom left to top right": box("background:rgb(255, 255, 255)", `<svg width="160" height="96" style="display:block"><line x1="10" y1="86" x2="150" y2="10" stroke="rgb(20, 20, 20)" stroke-width="6"/></svg>`),
     "an SVG gradient defined outside the selection": `<svg width="0" height="0" style="position:absolute"><defs><linearGradient id="sky"><stop offset="0" stop-color="rgb(255, 120, 0)"/><stop offset="1" stop-color="rgb(80, 0, 200)"/></linearGradient></defs></svg>`
@@ -115,7 +122,7 @@ describe("the pasted design looks like the page", () => {
   };
   for (const [name, html] of Object.entries(cases)) {
     test(name, async () => {
-      const {difference} = await fidelity(html.includes("<x-card") ? `<script>customElements.define("x-card", class extends HTMLElement { constructor() { super(); this.attachShadow({mode:"open"}).innerHTML = '<div style="position:absolute;margin:20px 0 0 60px;width:80px;height:50px;background:rgb(240, 90, 30)"></div><div style="padding:8px"><slot></slot></div>'; } });</script>${html}` : html, name.startsWith("a scrolled") ? () => { document.querySelector("#root").scrollTop = 120; } : undefined, {crop:name.includes("overflows") ? "corner" : /dashed|dotted/.test(name) ? "center" : false});
+      const {difference} = await fidelity(html.includes("<x-card") ? `<script>customElements.define("x-card", class extends HTMLElement { constructor() { super(); this.attachShadow({mode:"open"}).innerHTML = '<div style="position:absolute;margin:20px 0 0 60px;width:80px;height:50px;background:rgb(240, 90, 30)"></div><div style="padding:8px"><slot></slot></div>'; } });</script>${html}` : html, name.startsWith("a scrolled") ? () => { document.querySelector("#root").scrollTop = 120; } : undefined, {crop:name.includes("overflows") ? "corner" : /dashed|dotted/.test(name) ? "center" : false, files:name.includes("another file") ? SPRITE_FILES : null});
       expect(difference).toBeLessThan(THRESHOLD);
     });
   }

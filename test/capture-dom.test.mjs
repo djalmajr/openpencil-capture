@@ -277,6 +277,22 @@ describe("list markers", () => {
   }
 });
 
+describe("a <use> that references another file", () => {
+  const sprite = `<svg xmlns="http://www.w3.org/2000/svg"><symbol id="dot" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" fill="red"/></symbol></svg>`;
+  test("reads a same-origin file the page draws from", async () => {
+    const capture = await captureHtml(`<div id="root"><svg width="20" height="20"><use href="/s.svg#dot"/></svg></div>`, "#root", {files:{"/s.svg":sprite}});
+    expect(capture.nodes.find((node) => node.tag === "circle")?.styles.fill).toBe("rgb(255, 0, 0)");
+  });
+
+  // Chromium draws no cross-origin <use>, so the capture must not fetch one either.
+  test("never asks another origin for a file", async () => {
+    const requests = [];
+    const capture = await captureHtml(`<div id="root"><svg width="20" height="20"><use href="https://elsewhere.test/s.svg#dot"/></svg></div>`, "#root", {files:{"/s.svg":sprite}, requests});
+    expect(requests.filter((url) => url.includes("elsewhere.test"))).toEqual([]);
+    expect(capture.nodes.some((node) => node.tag === "circle")).toBe(false);
+  });
+});
+
 // Regressions found in review: each of these showed text the page does not draw.
 describe("what a capture may contain, at the edges", () => {
   test("leaves out text written straight inside a closed <details>", async () => {

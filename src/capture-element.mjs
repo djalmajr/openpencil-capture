@@ -14,7 +14,7 @@ export const CAPTURED_STYLE_KEYS = [
   "fontFamily", "fontSize", "fontStyle", "fontWeight", "letterSpacing", "lineHeight",
   "paddingTop", "paddingRight", "paddingBottom", "paddingLeft",
   "textAlign", "textTransform", "whiteSpaceCollapse", "tabSize", "textDecorationLine", "textDecorationColor", "textDecorationThickness", "textUnderlineOffset", "whiteSpace", "textOverflow", "webkitLineClamp", "webkitBoxOrient", "opacity", "overflow", "visibility", "boxShadow",
-  "objectFit", "objectPosition", "filter", "mixBlendMode",
+  "objectFit", "objectPosition", "filter", "backdropFilter", "mixBlendMode",
   "fill", "fillOpacity", "fillRule", "stroke", "strokeWidth", "strokeOpacity", "strokeDasharray", "strokeDashoffset", "strokeLinecap", "strokeLinejoin",
   "stopColor", "stopOpacity",
 ];

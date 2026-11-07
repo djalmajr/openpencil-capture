@@ -55,7 +55,9 @@ During serialization the toolbar collapses to `Capturing selection…` or `Captu
 | `background-clip:text` | The background as the text's fill |
 | `<img>`, CSS `url()` background, `<canvas>` | Image fill with the bytes embedded, placed by `object-fit` and `object-position` |
 | SVG, AVIF and other images CanvasKit cannot decode | Image fill rasterized at twice the displayed size |
-| `grayscale()`, `brightness()` | Editable overlay layers above the image |
+| `grayscale()`, `brightness()` on an image | Editable overlay layers above the image |
+| Other color filters on an image | Baked into its pixels |
+| `filter: blur()`, `drop-shadow()`, `opacity()`; `backdrop-filter: blur()` | Layer blur, drop shadow, layer opacity; background blur |
 | `mix-blend-mode` | Fill blend mode |
 | `box-shadow`, border, per-side border, radius | Effects, strokes and corners; dashed and dotted borders and SVG `stroke-dasharray` keep their dashes |
 
@@ -73,7 +75,7 @@ Limits of the capture model:
 
 - Layout is absolute; Auto Layout is not inferred.
 - Pseudo-elements and masks are not captured.
-- Filters other than `grayscale()` and `brightness()` are dropped.
+- Color filters (`sepia()`, `invert()`, `saturate()`, `hue-rotate()`, `contrast()`) are baked into images, and only by the extension: the CLI keeps the image unfiltered. On other elements they are dropped, and so are `filter:url()` and other `backdrop-filter` functions than `blur()`.
 - A cross-origin iframe comes out empty when the page around it is captured; capture inside the frame to get its content. So does a `<use>` that references another file.
 - Gradients blend in sRGB whatever `in <space>` says, and color hints are ignored. `background-repeat:space` repeats without spacing.
 - An elliptical corner (`border-radius:50%` on a box that is not square, `10px 20px`) becomes circular, with the smaller radius.

@@ -6,7 +6,7 @@ import { createOpenPencilClipboardHtml } from "../src/openpencil-clipboard.mjs";
 import { fetchExtensionAsset } from "../src/extension/asset-fetch.mjs";
 import { effectiveFilter } from "../src/capture-element.mjs";
 import { captureProgressForElapsed } from "../src/extension/capture-progress.mjs";
-import { rasterSize } from "../src/extension/rasterize.mjs";
+import { isBakedFilter, rasterSize } from "../src/extension/rasterize.mjs";
 import { waitForVisualStability } from "../src/extension/visual-stability.mjs";
 import { writeClipboardPayload } from "../src/extension/write-clipboard.mjs";
 import { decodeDataUrl, isEditorDecodableImage, loadImageBytes } from "../src/load-image.mjs";
@@ -230,6 +230,21 @@ describe("image loading", () => {
     expect(requests[0].url).toStartWith("data:image/svg+xml;base64,");
     expect(requests[0].rasterize).toEqual({width:8, height:8});
     expect(Array.from(bytes)).toEqual(Array.from(PNG));
+  });
+
+  test("asks the extension to bake color filters into an image", async () => {
+    const asked = [];
+    const bytes = await loadImageBytes("data:image/png;base64,iVBORw0KGgo=", {width:4, height:4, filter:"sepia(1)"}, {requestAsset:async (request) => { asked.push(request.rasterize); return "data:image/png;base64,iVBORw0KGgo="; }});
+    expect(asked).toEqual([{width:4, height:4, filter:"sepia(1)"}]);
+    expect(isEditorDecodableImage(bytes)).toBe(true);
+  });
+
+  // Security boundary: the offscreen canvas takes a filter string, and url() would reach outside.
+  test("bakes only the color filters a capture produces", () => {
+    expect(isBakedFilter("sepia(0.8) hue-rotate(90deg) contrast(120%)")).toBe(true);
+    expect(isBakedFilter("url(https://evil.test/f.svg#x)")).toBe(false);
+    expect(isBakedFilter("blur(2px)")).toBe(false);
+    expect(isBakedFilter("sepia(1) url(#x)")).toBe(false);
   });
 
   test("rasterizes at twice the displayed size, keeping the source's proportions", () => {

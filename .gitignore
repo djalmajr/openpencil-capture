@@ -4,3 +4,4 @@ artifacts/
 *.capture.json
 *.capture-tree.json
 .DS_Store
+.soho/

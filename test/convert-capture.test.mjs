@@ -26,6 +26,23 @@ describe("cssColorToHex", () => {
 });
 
 describe("convertCaptureToTree", () => {
+  test("turns CSS filters into effects and layer opacity", () => {
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 80, 40], {filter:"blur(4px) drop-shadow(rgb(0, 0, 0) 2px 3px 6px) opacity(0.5)", backdropFilter:"blur(12px) saturate(1.5)", opacity:"0.8"}]));
+    expect(root.effect).toEqual([
+      {type:"blur", kind:"layer", sigma:4},
+      {type:"shadow", shadowType:"outer", offset:{x:2, y:3}, blur:6, spread:0, color:"#000000"},
+      {type:"blur", kind:"background", sigma:12},
+    ]);
+    expect(root.opacity).toBe(0.4);
+  });
+
+  test("bakes an image's color filters into its pixels and keeps grayscale editable", () => {
+    const tree = convertCaptureToTree(ir(["0", "div", [0, 0, 80, 40]], ["0.0", "img", [0, 0, 80, 40], {filter:"sepia(0.8) grayscale(1)"}, {attributes:{currentSrc:"https://example.test/a.png", effectiveFilter:"sepia(0.8) grayscale(1)"}}]));
+    const image = tree.root.children[0];
+    expect(image.children[0].fill).toMatchObject({type:"image", filter:"sepia(0.8)"});
+    expect(image.children[1].name).toContain("Grayscale");
+  });
+
   test("resolves percentage and elliptical radii against the box", () => {
     const radius = (value, width = 80, height = 40) => convertCaptureToTree(ir(["0", "div", [0, 0, width, height], {
       borderTopLeftRadius:value, borderTopRightRadius:value, borderBottomRightRadius:value, borderBottomLeftRadius:value,

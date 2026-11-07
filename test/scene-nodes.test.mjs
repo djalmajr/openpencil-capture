@@ -108,9 +108,15 @@ describe("borders and corners", () => {
       {type:"shadow", shadowType:"outer", offset:{x:0, y:2}, blur:4, spread:1, color:"#00000040"},
       {type:"shadow", shadowType:"inner", offset:{x:1, y:0}, blur:0, spread:0, color:"#FF0000"},
     ]}));
-    expect(effects[0]).toMatchObject({type:"DROP_SHADOW", visible:true, offset:{x:0, y:2}, radius:4, spread:1});
+    // CSS blurs a shadow with a Gaussian of half its blur; the editor uses 0.43 × radius.
+    expect(effects[0]).toMatchObject({type:"DROP_SHADOW", visible:true, offset:{x:0, y:2}, radius:4.6512, spread:1});
     expect(effects[0].color.a).toBeCloseTo(64 / 255);
     expect(effects[1].type).toBe("INNER_SHADOW");
+  });
+
+  test("maps CSS blurs to layer and background blurs of the same spread", () => {
+    const {effects} = toSceneNodes(frame([], {effect:[{type:"blur", kind:"layer", sigma:4.3}, {type:"blur", kind:"background", sigma:8.6}]}));
+    expect(effects.map(({type, radius}) => [type, radius])).toEqual([["LAYER_BLUR", 10], ["BACKGROUND_BLUR", 20]]);
   });
 });
 
@@ -225,6 +231,15 @@ describe("structure", () => {
       {type:"rectangle", name:"A", x:0, y:0, width:10, height:90, fill},
       {type:"rectangle", name:"B", x:0, y:0, width:30, height:20, fill},
     ]));
-    expect([...requests]).toEqual([["https://example.test/a.png", {width:30, height:90}]]);
+    expect([...requests]).toEqual([["https://example.test/a.png", {url:"https://example.test/a.png", width:30, height:90}]]);
+  });
+
+  test("asks separately for an image with color filters baked in", () => {
+    const url = "https://example.test/a.png";
+    const requests = collectImageRequests(frame([
+      {type:"rectangle", name:"A", x:0, y:0, width:10, height:10, fill:{type:"image", url, mode:"fill"}},
+      {type:"rectangle", name:"B", x:0, y:0, width:10, height:10, fill:{type:"image", url, mode:"fill", filter:"sepia(1)"}},
+    ]));
+    expect([...requests.values()]).toEqual([{url, width:10, height:10}, {url, filter:"sepia(1)", width:10, height:10}]);
   });
 });

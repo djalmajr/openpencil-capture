@@ -15,6 +15,9 @@ const TRANSPARENT = {r:0, g:0, b:0, a:0};
 
 const round = (value) => Number(value.toFixed(4));
 
+// An image with color filters baked in is a different image from the same url without them.
+export const imageKey = (fill) => fill.filter ? `${fill.url}#filter=${fill.filter}` : fill.url;
+
 export function hexToColor(hex) {
   const value = hex.slice(1);
   const pairs = value.length <= 4 ? [...value].map((digit) => digit + digit) : value.match(/../g);
@@ -110,7 +113,7 @@ function toFills(fill, width, height, imageHashes) {
     if (typeof fill === "string") return solidPaint(fill);
     if (fill.type === "color") return solidPaint(fill.color);
     if (fill.type === "gradient") return gradientPaint(fill, width, height);
-    const hash = imageHashes.get(fill.url);
+    const hash = imageHashes.get(imageKey(fill));
     return hash ? imagePaint(fill, hash, width, height) : null;
   };
   const result = paint();
@@ -150,13 +153,23 @@ function cornerProperties(radius) {
   return radius ? {cornerRadius:radius} : {};
 }
 
+// The editor blurs with a Gaussian of 0.43 × radius. CSS uses half the blur of a shadow, and the
+// length given to blur() itself.
+const EDITOR_SIGMA_PER_RADIUS = 0.43;
+const radiusForSigma = (sigma) => round(sigma / EDITOR_SIGMA_PER_RADIUS);
+
 function toEffects(effect) {
   if (!effect) return [];
-  return (Array.isArray(effect) ? effect : [effect]).map((shadow) => ({
-    type:shadow.shadowType === "inner" ? "INNER_SHADOW" : "DROP_SHADOW",
-    visible:true, blendMode:"NORMAL", color:hexToColor(shadow.color),
-    offset:shadow.offset, radius:shadow.blur, spread:shadow.spread,
-  }));
+  return (Array.isArray(effect) ? effect : [effect]).map((item) => {
+    if (item.type === "blur") {
+      return {type:item.kind === "background" ? "BACKGROUND_BLUR" : "LAYER_BLUR", visible:true, blendMode:"NORMAL", color:TRANSPARENT, offset:{x:0, y:0}, radius:radiusForSigma(item.sigma), spread:0};
+    }
+    return {
+      type:item.shadowType === "inner" ? "INNER_SHADOW" : "DROP_SHADOW",
+      visible:true, blendMode:"NORMAL", color:hexToColor(item.color),
+      offset:item.offset, radius:radiusForSigma(item.blur / 2), spread:item.spread,
+    };
+  });
 }
 
 function commonProperties(node) {
@@ -317,7 +330,7 @@ export function toSceneNodes(root, imageHashes = new Map()) {
     }
     const fills = toFills(node.fill, node.width, node.height, imageHashes);
     const imageFills = [node.fill].flat().filter((fill) => fill?.type === "image");
-    const missingImage = imageFills.some((fill) => !imageHashes.get(fill.url));
+    const missingImage = imageFills.some((fill) => !imageHashes.get(imageKey(fill)));
     const painted = {
       ...common,
       ...(missingImage ? {name:`${node.name} · Image unavailable`} : {}),
@@ -340,9 +353,12 @@ export function collectImageRequests(root) {
   const visit = (node) => {
     for (const fill of [node.fill].flat()) {
       if (fill?.type !== "image") continue;
-      const previous = requests.get(fill.url);
+      const key = imageKey(fill);
+      const previous = requests.get(key);
       const shown = fill.imageRect || node;
-      requests.set(fill.url, {
+      requests.set(key, {
+        url:fill.url,
+        ...(fill.filter ? {filter:fill.filter} : {}),
         width:Math.max(previous?.width ?? 0, shown.width ?? 0),
         height:Math.max(previous?.height ?? 0, shown.height ?? 0),
       });

@@ -29,15 +29,15 @@ export async function loadTreeImages(root, loadImage) {
   const images = new Map();
   const hashes = new Map();
   const missing = [];
-  await Promise.all(Array.from(collectImageRequests(root), async ([url, size]) => {
-    const bytes = await loadImage(url, size).catch(() => null);
+  await Promise.all(Array.from(collectImageRequests(root), async ([key, request]) => {
+    const bytes = await loadImage(request.url, request).catch(() => null);
     if (!bytes) {
-      missing.push(url);
+      missing.push(request.url);
       return;
     }
     const hash = computeImageHash(bytes);
     images.set(hash, bytes);
-    hashes.set(url, hash);
+    hashes.set(key, hash);
   }));
   return {images, hashes, missing};
 }

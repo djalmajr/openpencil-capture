@@ -1,4 +1,5 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
+import { readFile } from "node:fs/promises";
 import { convertCaptureToTree, cssColorToHex } from "../src/convert-capture.mjs";
 import { hexToColor } from "../src/scene-nodes.mjs";
 import { renderInEditor } from "./support/render.mjs";
@@ -157,5 +158,26 @@ describe("documents inside the page", () => {
       });
     }});
     expect(capture.nodes.filter((node) => node.text).map((node) => [node.tag, node.text])).toEqual([["b", "shadow"], ["slot", "slotted"]]);
+  });
+});
+
+describe("baking filters into images", () => {
+  test("the extension's rasterizer draws the image through its color filters", async () => {
+    const source = (await readFile(new URL("../src/extension/rasterize.mjs", import.meta.url), "utf8")).replace(/\bexport\s+/g, "");
+    const red = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==";
+    const pixel = await captureHtml.evaluate(async ({source, red}) => {
+      const rasterizeImage = new Function(`${source}; return rasterizeImage;`)();
+      const pixelOf = async (filter) => {
+        const image = new Image();
+        image.src = await rasterizeImage(red, {width:2, height:2, filter});
+        await image.decode();
+        const context = Object.assign(document.createElement("canvas"), {width:1, height:1}).getContext("2d");
+        context.drawImage(image, 0, 0, 1, 1);
+        return Array.from(context.getImageData(0, 0, 1, 1).data);
+      };
+      return {inverted:await pixelOf("invert(1)"), refused:await pixelOf("url(#x)")};
+    }, {source, red});
+    expect(pixel.inverted).toEqual([0, 255, 255, 255]);
+    expect(pixel.refused).toEqual([255, 0, 0, 255]);
   });
 });

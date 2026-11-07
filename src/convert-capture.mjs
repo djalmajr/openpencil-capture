@@ -379,6 +379,44 @@ function cssBlendMode(value) {
   return value === "normal" ? null : modes.get(value) || null;
 }
 
+// The filter functions of a `filter` value, in order, each with its argument text.
+function filterFunctions(value) {
+  if (!value || value === "none") return [];
+  return Array.from(String(value).matchAll(/([a-z-]+)\(((?:[^()]|\([^()]*\))*)\)/gi), ([, name, args]) => ({name:name.toLowerCase(), args:args.trim()}));
+}
+
+const filterNumber = (value) => {
+  const amount = Number.parseFloat(value);
+  return String(value).trim().endsWith("%") ? amount / 100 : amount;
+};
+
+// What a filter becomes in the editor: blurs and drop shadows as effects, opacity() as layer
+// opacity. Color functions stay for images, which take them in their pixels.
+function filterEffects(filter) {
+  const effects = [];
+  let opacity = 1;
+  for (const {name, args} of filterFunctions(filter)) {
+    if (name === "blur" && px(args) > 0) effects.push({type:"blur", kind:"layer", sigma:px(args)});
+    if (name === "opacity" && Number.isFinite(filterNumber(args))) opacity *= clamp(filterNumber(args));
+    if (name === "drop-shadow") {
+      const [shadow] = parseCssShadows(args);
+      if (shadow) effects.push({...shadow, spread:0});
+    }
+  }
+  return {effects, opacity};
+}
+
+function backdropEffects(value) {
+  return filterFunctions(value).filter(({name, args}) => name === "blur" && px(args) > 0).map(({args}) => ({type:"blur", kind:"background", sigma:px(args)}));
+}
+
+// Color filters an image takes in its pixels; grayscale() and brightness() stay editable overlays.
+const BAKED_FILTERS = new Set(["sepia", "invert", "saturate", "hue-rotate", "contrast"]);
+
+function bakedFilter(filter) {
+  return filterFunctions(filter).filter(({name}) => BAKED_FILTERS.has(name)).map(({name, args}) => `${name}(${args})`).join(" ");
+}
+
 function filterAmount(filter, name) {
   const value = filter?.match(new RegExp(`${name}\\(([^)]+)\\)`,`i`))?.[1]?.trim();
   if (!value) return null;
@@ -399,18 +437,25 @@ function filteredImageNode(node, parent, url) {
   const radius = cornerRadius(node);
   const coversBox = placement && placement.region.x === 0 && placement.region.y === 0 && placement.region.width === rect.width && placement.region.height === rect.height;
   const metadata = filter && filter !== "none" ? {metadata:{type:"openpencil-capture-image",filter}} : {};
+  const baked = bakedFilter(filter);
+  if (placement && baked) placement.fill = {...placement.fill, filter:baked};
+  const own = filterEffects(node.styles.filter);
+  const effectProperties = {
+    ...(own.effects.length ? {effect:own.effects.length === 1 ? own.effects[0] : own.effects} : {}),
+    ...(own.opacity < 1 ? {opacity:round(own.opacity)} : {}),
+  };
   if (!(grayscale > 0) && !darkened && !backgroundColor && (coversBox || !radius)) {
     if (!placement) return null;
     return {type:"rectangle",name:semanticLayerName(node),layoutPosition:"absolute",
       x:round(rect.x + placement.region.x),y:round(rect.y + placement.region.y),width:placement.region.width,height:placement.region.height,
-      fill:placement.fill,...(coversBox ? {cornerRadius:radius} : {}),...metadata};
+      fill:placement.fill,...(coversBox ? {cornerRadius:radius} : {}),...metadata,...effectProperties};
   }
   const full = {layoutPosition:"absolute",x:0,y:0,width:rect.width,height:rect.height};
   const children = placement ? [{type:"rectangle",name:`${semanticLayerName(node)} · Source`,layoutPosition:"absolute",...placement.region,fill:placement.fill}] : [];
   if (grayscale > 0) children.push({type:"rectangle",name:`${semanticLayerName(node)} · Grayscale`,...full,fill:{type:"color",color:`#808080${Math.round(Math.min(1,grayscale)*255).toString(16).padStart(2,"0").toUpperCase()}`,blendMode:"saturation"}});
   if (darkened) children.push({type:"rectangle",name:`${semanticLayerName(node)} · Brightness`,...full,fill:`#000000${Math.round((1-brightness)*255).toString(16).padStart(2,"0").toUpperCase()}`});
   return {type:"frame",name:semanticLayerName(node),layout:"none",layoutPosition:"absolute",...rect,clip:true,cornerRadius:radius,
-    ...(backgroundColor ? {fill:backgroundColor} : {}),metadata:{type:filter && filter !== "none" ? "openpencil-capture-image-filter" : "openpencil-capture-image",filter},children};
+    ...(backgroundColor ? {fill:backgroundColor} : {}),metadata:{type:filter && filter !== "none" ? "openpencil-capture-image-filter" : "openpencil-capture-image",filter},...effectProperties,children};
 }
 
 // A primitive as path data in its own user space; percentages resolve against the viewBox.
@@ -630,7 +675,12 @@ export function convertCaptureToTree(capture) {
     const textBackground = clipsText ? fills : clippedBackground;
     const shadows = parseCssShadows(node.styles.boxShadow);
     const border = Object.keys(borderProperties(node.styles)).length ? borderProperties(node.styles) : shadowRingBorder(shadows);
-    const effects = shadows.filter((shadow) => !(border.stroke === shadow.color && border.strokeWidth === shadow.spread && shadow.offset.x === 0 && shadow.offset.y === 0 && shadow.blur === 0));
+    const filtered = filterEffects(node.styles.filter);
+    const effects = [
+      ...shadows.filter((shadow) => !(border.stroke === shadow.color && border.strokeWidth === shadow.spread && shadow.offset.x === 0 && shadow.offset.y === 0 && shadow.blur === 0)),
+      ...filtered.effects, ...backdropEffects(node.styles.backdropFilter || node.styles.webkitBackdropFilter),
+    ];
+    const layerOpacity = px(node.styles.opacity, 1) * filtered.opacity;
     let frameRect = relativeRect(node, parent);
     if (node.namespace === "http://www.w3.org/2000/svg" && node.tag === "g") {
       let svg = node;
@@ -650,10 +700,10 @@ export function convertCaptureToTree(capture) {
       ...frameRect, cornerRadius:cornerRadius(node),
       ...(!clipsText && fills.length ? {fill:fills.length === 1 ? fills[0] : fills} : {}),
       ...border, ...(effects.length ? { effect:effects.length === 1 ? effects[0] : effects } : {}), ...(clipped ? { clip:true } : {}),
-      ...(px(node.styles.opacity, 1) < 1 ? { opacity:round(px(node.styles.opacity, 1)) } : {}), children:[],
+      ...(layerOpacity < 1 ? { opacity:round(layerOpacity) } : {}), children:[],
     } : {
       type:"group", name:semanticLayerName(node), layoutPosition:"absolute", x:frameRect.x, y:frameRect.y,
-      ...(px(node.styles.opacity, 1) < 1 ? { opacity:round(px(node.styles.opacity, 1)) } : {}), children:[],
+      ...(layerOpacity < 1 ? { opacity:round(layerOpacity) } : {}), children:[],
     };
     if (framed) stats.frames += 1; else stats.groups += 1;
     if (!clipsText) {

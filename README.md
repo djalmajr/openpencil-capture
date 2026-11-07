@@ -26,7 +26,7 @@ Click the extension icon to enter capture mode. The page gets a floating toolbar
 
 Once the toolbar confirms the copy, switch to OpenPencil and paste. With nothing selected, the capture lands selected at the top-left of the current page.
 
-The toolbar fades while the pointer is over it so content underneath remains selectable. No page data is transmitted: captures stay in the clipboard. To embed images, the page fetches them first; if that fails, the extension fetches them from their own server without cookies.
+The toolbar fades while the pointer is over it so content underneath remains selectable. No page data is transmitted: captures stay in the clipboard. To embed images, the page fetches them first; if that fails, the extension fetches them from their own server without cookies. A `<use>` that shows a sprite file has the page fetch that file again, same origin only, as the browser did to draw it.
 
 The picker follows live DOM updates between hover and click, and recovers a selected element after a framework rerender. Capture mode is installed in every accessible frame: entering an iframe activates its local picker and hides the parent's, so selection and capture operate on the iframe's own DOM without stacked toolbars.
 
@@ -37,16 +37,17 @@ During serialization the toolbar collapses to `Capturing selection…` or `Captu
 | Source | OpenPencil layer |
 | --- | --- |
 | HTML element | `FRAME` with absolute children, keeping the DOM hierarchy |
-| Positioned `::before`, `::after` | `FRAME` named `Before · Decoration`, `After · Decoration` |
+| `::before`, `::after`, positioned or in the flow (inline, inline-block, block, flex item) | `FRAME` named `Before · Decoration`, `After · Decoration`, with its quoted text |
+| List marker (`::marker`) | Its text (`1.`, `iv.`, a `content` string), or the disc, circle, square or disclosure triangle Chromium paints, as a shape |
 | Unpainted SVG wrapper | `GROUP` fitted to its children |
 | Text | `TEXT`, one layer per visual line, with visible truncation kept as `...`, preformatted spaces, and the font family the browser drew with |
 | `<a href>` | Text hyperlink to the absolute target, for `http(s)`, `mailto` and `tel` |
 | `path`, `line`, `polyline`, `polygon`, partial circle | `VECTOR` with an editable vector network |
 | `rect`, `circle`, `ellipse` | `RECTANGLE`, `ELLIPSE`; a turned one becomes a `VECTOR` |
 | SVG `transform` | Applied to the vector network |
-| `<use>` of a `<symbol>` or graphic in the page | The referenced graphics, with the styles and `currentColor` they inherit from the `<use>` |
+| `<use>` of a `<symbol>` or graphic, in the page or in a same-origin file | The referenced graphics, with the styles and `currentColor` they inherit from the `<use>`; a file's own style rules apply |
 | Shadow roots, open and (in the extension) closed, and slots | Their rendered content, in place |
-| Same-origin `<iframe>` | Its document, clipped to the frame, over the canvas background |
+| `<iframe>`, same origin or not | Its document, clipped to the frame, over the canvas background. Another origin's document is captured in the frame itself, by the extension's script there or by the CLI's browser |
 | Color, including `oklch`, `oklab`, `lab`, `lch` and `color()` spaces | Solid fill |
 | CSS linear, radial and conic gradient, SVG linear gradient | Native linear, radial or angular gradient |
 | Layered `background` | One fill per layer over the background color; a layer that paints only part of the box, and every layer above it, becomes a rectangle of its own |
@@ -58,9 +59,14 @@ During serialization the toolbar collapses to `Capturing selection…` or `Captu
 | SVG, AVIF and other images CanvasKit cannot decode | Image fill rasterized at twice the displayed size |
 | `grayscale()`, `brightness()` on an image | Editable overlay layers above the image |
 | Other color filters on an image | Baked into its pixels |
+| Color filters (`grayscale()`, `sepia()`, `saturate()`, `hue-rotate()`, `invert()`, `brightness()`, `contrast()`) on any other element | Applied, in order and in sRGB as Chromium does, to every fill, gradient stop, stroke and shadow it paints; baked into its CSS background images |
+| `clip-path` shape (`inset()`, `circle()`, `ellipse()`, `polygon()`, `path()`) or `url()` to a `<clipPath>` | A vector mask over the element |
+| `mask-image` gradients and images, or `url()` to a `<mask>` | An alpha (or luminance) mask, its layers placed like backgrounds |
 | `filter: blur()`, `drop-shadow()`, `opacity()`; `backdrop-filter: blur()` | Layer blur, drop shadow, layer opacity; background blur |
 | `mix-blend-mode` | Fill blend mode |
-| `box-shadow`, border, per-side border, radius | Effects, strokes and corners; dashed and dotted borders and SVG `stroke-dasharray` keep their dashes |
+| `box-shadow`, border, per-side border, radius | Effects, strokes and corners; SVG `stroke-dasharray` keeps its dashes |
+| Elliptical corners (`border-radius:50%` on a box that is not square, `10px / 20px`) | A vector of the exact outline holding the background and shadows, and a ring for the border |
+| Dashed and dotted borders | Laid out as Chromium does: one line per side with square corners, one loop along the border with rounded ones, gaps fitted to whole dashes, round dots from 3px |
 
 Before serializing, the extension waits for SVG geometry to stabilize so animated charts are not copied mid-transition.
 
@@ -68,19 +74,22 @@ Images and canvas pixels travel inside the clipboard, so pasting needs no networ
 
 ### Sensitive values
 
-Values the page masks paste as bullets, both `type=password` fields and anything using `-webkit-text-security`. Nothing the page does not render is read: content under `display:none`, `opacity:0` or `content-visibility:hidden` (`hidden=until-found`), everything in a closed `<details>` but its summary, text under `visibility:hidden`, a hidden frame, `type=hidden` fields, and text or control values moved off the page or clipped out of sight, character by character, by an `overflow` box inside the selection.
+Values the page masks paste as bullets, both `type=password` fields and anything using `-webkit-text-security`. Nothing the page does not render is read: content under `display:none`, `opacity:0` or `content-visibility:hidden` (`hidden=until-found`), everything in a closed `<details>` but its summary, text under `visibility:hidden`, a hidden frame, `type=hidden` fields, and text or control values moved off the page or clipped out of sight, character by character, by an `overflow` box inside the selection. A frame of another origin gives only what shows through its `<iframe>`, and `clip-path:inset()` hides what it cuts. A sprite file is fetched only for a `<use>` the page draws, over http(s), and used only if it comes back as SVG.
 
 ### Known limitations
 
 Limits of the capture model:
 
 - Layout is absolute; Auto Layout is not inferred.
-- Inline pseudo-elements (`::before` icons and bullets in the text flow), `::marker` and masks are not captured. A positioned pseudo-element is, with its quoted text and the translation of its transform, not a rotation or scale.
-- Color filters (`sepia()`, `invert()`, `saturate()`, `hue-rotate()`, `contrast()`) are baked into images, and only by the extension: the CLI keeps the image unfiltered. On other elements they are dropped, and so are `filter:url()` and other `backdrop-filter` functions than `blur()`.
-- A cross-origin iframe comes out empty when the page around it is captured; capture inside the frame to get its content. So does a `<use>` that references another file.
+- A pseudo-element in the flow is placed from what it sits next to, the way a first or last child would be. Pseudo-elements of grid items, of right-to-left text and of reversed or wrapping flex lines are left out. `content` from counters, `attr()` or images gives no text. A positioned pseudo-element keeps the translation of its transform, not a rotation or scale.
+- List markers follow `list-style-type` and the list's numbering (`start`, `value`, `reversed`); custom counters and `list-style-image` are left out.
+- Color filters on CSS background images are baked only by the extension: the CLI keeps the image unfiltered. `filter:url()` and other `backdrop-filter` functions than `blur()` are dropped.
+- Masks stack their layers as `mask-composite:add` does, whatever the value. A `<mask>` or `<clipPath>` takes its direct shapes, not `<use>`, `<text>` or nested groups, and not a `<mask>`'s region. Gradients defined inside a sprite file a `<use>` shows are left out.
+- A frame of another origin is captured when something can run there: the extension's script, injected in every frame when capture mode opens (a frame that loads later stays empty until it is reopened), or the CLI's browser. A frame that refuses it and, in the extension, one inside a shadow tree stay empty; the capture lists the ones it could not reach in `frames`. A frame of either origin that a transform, an SVG `<foreignObject>`, a motion path or `zoom` scales, turns, mirrors or skews, on it or around it, stays empty too, since what shows of it cannot be worked out; a translation alone is fine.
+- `clip-path:inset()`, on an element or a frame, keeps what it cuts away out of the capture; a length it cannot work out cuts everything. Other clip shapes and masks hide content in the design, but the masked layers still hold it.
+- Ids are looked up across the whole capture, so a frame and the page that share an id for a gradient, `<clipPath>` or `<mask>` can pick up each other's.
 - A gradient that blends outside sRGB (`in oklab`, `oklch` stops) or through a color hint gets stops in between, so it is close but no longer has only the stops written. `lab`, `lch`, `hsl` and `hwb` blend as `oklab`, `oklch` and sRGB. `background-repeat:space` repeats without spacing.
-- An elliptical corner (`border-radius:50%` on a box that is not square, `10px 20px`) becomes circular, with the smaller radius.
-- A dashed or dotted border keeps Chromium's dash lengths, but the editor starts the dashes at a corner rather than centering them on each side, and draws dots square.
+- A border with different colors per side takes one color. A dashed border with rounded corners and sides of different widths keeps the editor's dashes.
 
 When a resource cannot be read, or the clipboard is misused:
 

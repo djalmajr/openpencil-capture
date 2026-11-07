@@ -178,6 +178,8 @@ function commonProperties(node) {
     x:node.x ?? 0,
     y:node.y ?? 0,
     ...(node.opacity !== undefined && node.opacity < 1 ? {opacity:node.opacity} : {}),
+    // A mask masks the siblings after it, as in Figma.
+    ...(node.isMask ? {isMask:true, maskType:node.maskType || "ALPHA"} : {}),
   };
 }
 
@@ -211,6 +213,39 @@ function networkBounds({vertices, segments}) {
     ys.push(...cubicExtrema(a.y, a.y + tangentStart.y, b.y + tangentEnd.y, b.y));
   }
   return {minX:Math.min(...xs), minY:Math.min(...ys), maxX:Math.max(...xs), maxY:Math.max(...ys)};
+}
+
+// The box path data covers, curves included.
+export function pathBounds(geometry) {
+  const network = parseSVGPath(geometry, "NONZERO", {includeOpenRegions:true});
+  if (network.vertices.length === 0) return null;
+  const {minX, minY, maxX, maxY} = networkBounds(network);
+  return {x:minX, y:minY, width:maxX - minX, height:maxY - minY};
+}
+
+/**
+ * Path data through an affine `matrix` ([a, b, c, d, e, f], as SVG writes it), as closed cubic
+ * outlines: what a mask fills, so open subpaths close as SVG fills them.
+ */
+export function transformPath(geometry, [a, b, c, d, e, f], fillRule = "nonzero") {
+  const network = parseSVGPath(geometry, fillRule === "evenodd" ? "EVENODD" : "NONZERO", {includeOpenRegions:true});
+  const point = ({x, y}) => [a * x + c * y + e, b * x + d * y + f];
+  const vector = ({x, y}) => [a * x + c * y, b * x + d * y];
+  const text = (values) => values.map((value) => round(value)).join(" ");
+  const loops = network.regions.flatMap((region) => region.loops);
+  return loops.map((loop) => {
+    const first = network.segments[loop[0]];
+    const commands = [`M ${text(point(network.vertices[first.start]))}`];
+    for (const index of loop) {
+      const {start, end, tangentStart, tangentEnd} = network.segments[index];
+      const [sx, sy] = point(network.vertices[start]);
+      const [ex, ey] = point(network.vertices[end]);
+      const [tsx, tsy] = vector(tangentStart);
+      const [tex, tey] = vector(tangentEnd);
+      commands.push(tsx || tsy || tex || tey ? `C ${text([sx + tsx, sy + tsy, ex + tex, ey + tey, ex, ey])}` : `L ${text([ex, ey])}`);
+    }
+    return `${commands.join(" ")} Z`;
+  }).join(" ");
 }
 
 // The node's box is the path's own box, as in the editor: paint servers and selection both use it.

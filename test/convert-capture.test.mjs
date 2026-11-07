@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { convertCaptureToTree, cssBackgroundToFill, cssColorToHex } from "../src/convert-capture.mjs";
+import { filterHex, filterTree } from "../src/css-effects.mjs";
 
 const rootStyles = { backgroundColor:"oklch(1 0 0)", borderTopColor:"oklch(0.93 0.007 106.5)", borderTopLeftRadius:"8px", borderTopRightRadius:"8px", borderBottomRightRadius:"8px", borderBottomLeftRadius:"8px", opacity:"1" };
 
@@ -174,9 +175,12 @@ describe("convertCaptureToTree", () => {
 
   test("dashes and dots borders the way Chromium draws them", () => {
     const border = (style, width) => convertCaptureToTree(ir(["0", "div", [0, 0, 80, 40], Object.fromEntries(["Top", "Right", "Bottom", "Left"].flatMap((side) => [[`border${side}Width`, `${width}px`], [`border${side}Style`, style], [`border${side}Color`, "rgb(0, 0, 0)"]]))])).root;
-    expect(border("dashed", 2).dashPattern).toEqual([6, 4]);
-    expect(border("dashed", 4).dashPattern).toEqual([8, 4]);
-    expect(border("dotted", 2).dashPattern).toEqual([2, 2]);
+    // The fixture's corners round by 8px, so the dashes run as one loop on a child vector.
+    expect(border("dashed", 2).children[0].dashPattern[0]).toBe(6);
+    expect(border("dashed", 4).children[0].dashPattern[0]).toBe(8);
+    expect(border("dotted", 2).children[0].dashPattern[0]).toBe(2);
+    expect(border("dashed", 2).dashPattern).toBeUndefined();
+    expect(border("solid", 2)).toMatchObject({stroke:"#000000", strokeWidth:2});
     expect(border("solid", 2).dashPattern).toBeUndefined();
     expect(border("hidden", 2).stroke).toBeUndefined();
   });
@@ -350,7 +354,7 @@ describe("convertCaptureToTree", () => {
     expect(root.children[0]).toMatchObject({type:"frame",clip:true,metadata:{type:"openpencil-capture-image-filter",filter:"brightness(0.6) grayscale(1)"}});
     expect(root.children[0].children[0]).toMatchObject({type:"rectangle",fill:{type:"image",url:"https://example.com/photo.png"}});
     expect(root.children[0].children[1]).toMatchObject({fill:{type:"color",blendMode:"saturation"}});
-    expect(root.children[0].children[2]).toMatchObject({fill:"#00000066"});
+    expect(root.children[0].children[2]).toMatchObject({fill:{type:"color", color:"#00000066"}});
     expect(root.children[1]).toMatchObject({type:"rectangle",name:"Canvas · Snapshot",fill:{type:"image",url:"data:image/png;base64,BBBB",mode:"stretch"}});
   });
 
@@ -436,6 +440,12 @@ describe("convertCaptureToTree", () => {
     expect(root.fill).toMatchObject({type:"gradient", gradientType:"linear"});
   });
 
+  test("keeps a gradient native when its area covers what it paints", () => {
+    const sides = Object.fromEntries(["Top", "Right", "Bottom", "Left"].flatMap((side) => [[`border${side}Width`, "4px"], [`border${side}Style`, "solid"], [`border${side}Color`, "rgba(0, 0, 0, 0.5)"]]));
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 200, 100], {...sides, backgroundColor:"rgba(0, 0, 0, 0)", backgroundImage:"linear-gradient(rgb(255, 0, 0), rgb(0, 0, 255))", backgroundRepeat:"repeat", backgroundOrigin:"border-box", backgroundClip:"padding-box", backgroundSize:"auto", backgroundPositionX:"0%", backgroundPositionY:"0%"}]));
+    expect([root.fill, ...root.children.map((child) => child.fill)].find((fill) => fill?.type)).toMatchObject({type:"gradient"});
+  });
+
   test("places a userSpaceOnUse radial gradient against the shape's own box", () => {
     const svgNs = {namespace:"http://www.w3.org/2000/svg"};
     const tree = convertCaptureToTree(ir(
@@ -495,5 +505,155 @@ describe("convertCaptureToTree", () => {
     const area = convertCaptureToTree(capture).root.children[0].children.find((child) => child.type === "path");
     expect(area.fill).toMatchObject({type:"gradient",gradientType:"linear",rotation:180});
     expect(area.fill.colors).toEqual([{color:"#FFD2302E",position:0},{color:"#FFD23008",position:1}]);
+  });
+});
+
+describe("CSS color filters on what an element paints", () => {
+  test("recolors in sRGB, one function after another, as Chromium does", () => {
+    // Chromium paints rgb(200, 60, 30) through grayscale(1) as 88, 88, 88 and through
+    // hue-rotate(90deg) as 30, 116, 0.
+    expect(filterHex("#C83C1E", [{name:"grayscale", args:"1"}])).toBe("#585858");
+    expect(filterHex("#C83C1E", [{name:"hue-rotate", args:"90deg"}])).toBe("#1E7400");
+    expect(filterHex("#C83C1E80", [{name:"invert", args:"100%"}])).toBe("#37C3E180");
+  });
+
+  test("filters a shadow only with the functions after it", () => {
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 80, 40], {backgroundColor:"rgb(255, 0, 0)", filter:"invert(1) drop-shadow(rgb(255, 0, 0) 2px 2px 0px) grayscale(1)"}]));
+    expect(root.fill).toBe("#C9C9C9");
+    expect(root.effect).toMatchObject({color:"#363636"});
+  });
+
+  test("leaves an image to the filters the page gave it", () => {
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 80, 40], {filter:"sepia(1)"}], ["0.0", "img", [0, 0, 80, 40], {}, {attributes:{currentSrc:"https://example.test/a.png", effectiveFilter:"sepia(1)"}}]));
+    expect(root.children[0].children[0].fill.filter).toBe("sepia(1)");
+    // Its own background goes through the same functions as its pixels, once.
+    expect(root.children[0].fill).toBe("#FFFFEF");
+  });
+
+  test("bakes a filter into a CSS background image", () => {
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 80, 40], {backgroundImage:'url("https://example.test/a.png")', filter:"brightness(0.5)"}]));
+    expect(root.fill).toEqual(["#808080", {type:"image", url:"https://example.test/a.png", mode:"stretch", filter:"brightness(0.5)"}]);
+  });
+});
+
+describe("CSS masks and clip paths", () => {
+  test("masks the element with its clip shape, mask first in a group", () => {
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 100, 80]], ["0.0", "div", [10, 10, 60, 40], {clipPath:"inset(5px 10px round 4px)"}]));
+    const group = root.children[0];
+    expect(group).toMatchObject({type:"group", x:10, y:10});
+    expect(group.children[0]).toMatchObject({type:"path", isMask:true, maskType:"VECTOR", geometry:expect.stringMatching(/^M 14 5 H 46 A 4 4/)});
+    expect(group.children[1]).toMatchObject({type:"frame", x:0, y:0, width:60, height:40});
+  });
+
+  test("skips an element its clip shape hides", () => {
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 100, 80]], ["0.0", "div", [10, 10, 60, 40], {clipPath:"inset(50%)"}]));
+    expect(root.children).toEqual([]);
+  });
+
+  test("clips a shape that reaches past the box to the box", () => {
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 100, 80]], ["0.0", "div", [10, 10, 60, 40], {clipPath:"circle(40px at 0px 0px)"}]));
+    expect(root.children[0]).toMatchObject({type:"frame", x:10, y:10, width:60, height:40, clip:true});
+    expect(root.children[0].children[0]).toMatchObject({type:"group", x:0, y:0});
+  });
+
+  test("turns mask layers into an alpha mask placed like backgrounds", () => {
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 100, 80], {maskImage:"linear-gradient(rgb(0, 0, 0), rgba(0, 0, 0, 0))", maskSize:"50% 100%", maskRepeat:"no-repeat", maskPosition:"100% 0%"}]));
+    const [mask, frame] = root.children;
+    expect(mask).toMatchObject({type:"frame", isMask:true, maskType:"ALPHA", width:100, height:80});
+    expect(mask.children[0]).toMatchObject({type:"rectangle", x:50, y:0, width:50, height:80, fill:{type:"gradient"}});
+    expect(frame).toMatchObject({type:"frame", name:"Div"});
+  });
+
+  test("leaves a mask naming a <mask> element of the page alone", () => {
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 100, 80], {maskImage:'url("https://example.test/#m")'}]));
+    expect(root.type).toBe("frame");
+  });
+});
+
+describe("elliptical corners", () => {
+  const corners = (value) => ({borderTopLeftRadius:value, borderTopRightRadius:value, borderBottomRightRadius:value, borderBottomLeftRadius:value});
+  test("draws the background, shadows and border on vectors of the exact outline", () => {
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 100, 50], {...corners("50%"), backgroundColor:"rgb(255, 0, 0)", boxShadow:"rgb(0, 0, 0) 0px 2px 4px 0px",
+      borderTopWidth:"2px", borderRightWidth:"2px", borderBottomWidth:"2px", borderLeftWidth:"2px", borderTopStyle:"dashed", borderRightStyle:"dashed", borderBottomStyle:"dashed", borderLeftStyle:"dashed",
+      borderTopColor:"rgb(0, 0, 255)", borderRightColor:"rgb(0, 0, 255)", borderBottomColor:"rgb(0, 0, 255)", borderLeftColor:"rgb(0, 0, 255)"}]));
+    expect(root.fill).toBeUndefined();
+    expect(root.stroke).toBeUndefined();
+    expect(root.effect).toBeUndefined();
+    const [background, border] = root.children;
+    expect(background).toMatchObject({type:"path", fill:"#FF0000", effect:{shadowType:"outer", color:"#000000"}, geometry:"M 50 0 H 50 A 50 25 0 0 1 100 25 V 25 A 50 25 0 0 1 50 50 H 50 A 50 25 0 0 1 0 25 V 25 A 50 25 0 0 1 50 0 Z"});
+    // A dashed border runs along the middle of the ring, its corners shrunk by half its width.
+    expect(border).toMatchObject({type:"path", stroke:"#0000FF", strokeWidth:2, dashPattern:[6, expect.closeTo(4, 0)], geometry:expect.stringContaining("A 49 24 0 0 1 99 25")});
+  });
+
+  test("keeps circular corners on the frame", () => {
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 100, 50], corners("10px")]));
+    expect(root.cornerRadius).toBe(10);
+    expect(root.children).toEqual([]);
+  });
+});
+
+describe("dashed borders", () => {
+  const sides = (style, width) => Object.fromEntries(["Top", "Right", "Bottom", "Left"].flatMap((side) => [[`border${side}Style`, style], [`border${side}Width`, width], [`border${side}Color`, "rgb(0, 0, 0)"]]));
+  const square = {borderTopLeftRadius:"0px", borderTopRightRadius:"0px", borderBottomRightRadius:"0px", borderBottomLeftRadius:"0px"};
+  test("fits whole dashes on each side, from corner to corner, as Chromium does", () => {
+    // Chromium draws a 160 × 96 box's 4px dashed border with 14 dashes of 8px on top and 8 on the side.
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 160, 96], {...square, ...sides("dashed", "4px")}]));
+    expect(root.stroke).toBeUndefined();
+    const [top, right] = root.children;
+    expect(top).toMatchObject({type:"path", geometry:"M 0 2 H 160", strokeWidth:4, dashPattern:[8, 3.6923]});
+    expect(right).toMatchObject({geometry:"M 158 0 V 96", dashPattern:[8, 4.5714]});
+  });
+
+  test("draws thick dots round, centered from corner to corner", () => {
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 160, 96], {...square, ...sides("dotted", "4px")}]));
+    expect(root.children[0]).toMatchObject({geometry:"M 2 2 H 158", strokeLinecap:"round", dashPattern:[0, 7.8]});
+  });
+
+  test("dashes a rounded border as one loop along its middle, once its inner edge is rounded", () => {
+    const corners = (radius) => ({borderTopLeftRadius:radius, borderTopRightRadius:radius, borderBottomRightRadius:radius, borderBottomLeftRadius:radius});
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 160, 96], {...corners("16px"), ...sides("dashed", "4px")}]));
+    expect(root.stroke).toBeUndefined();
+    expect(root.children).toHaveLength(1);
+    // Chromium fits 39 dashes of 8px around this loop, with a period of 12.08.
+    expect(root.children[0]).toMatchObject({geometry:expect.stringMatching(/^M 16 2 H 144 A 14 14 0 0 1 158 16/), dashPattern:[8, expect.closeTo(4.08, 1)]});
+    // A radius no larger than the border leaves the inner edge square, and the sides dash apart.
+    expect(convertCaptureToTree(ir(["0", "div", [0, 0, 160, 96], {...corners("3px"), ...sides("dashed", "4px")}])).root.children).toHaveLength(4);
+  });
+});
+
+// Regressions found in review of the closed limitations.
+describe("closed limitations, at the edges", () => {
+  const dashed = (size, width) => ir(["0", "div", [0, 0, size, size], Object.fromEntries(["Top", "Right", "Bottom", "Left"].flatMap((side) => [[`border${side}Style`, "dashed"], [`border${side}Width`, `${width}px`], [`border${side}Color`, "rgb(0, 0, 0)"], [`border${side === "Top" ? "TopLeft" : side === "Right" ? "TopRight" : side === "Bottom" ? "BottomRight" : "BottomLeft"}Radius`, "0px"]]))]);
+  test("draws a side too short for two dashes solid instead of failing", () => {
+    for (const [size, width] of [[10, 3], [11, 2], [5.5, 1]]) {
+      const {root} = convertCaptureToTree(dashed(size, width));
+      expect(root.children.every((line) => line.dashPattern === undefined)).toBe(true);
+    }
+  });
+
+  test("filters what a mask lets through, never the mask", () => {
+    const tree = {children:[{isMask:true, fill:"#FFFFFF", children:[{fill:"#FFFFFF"}]}, {fill:"#FFFFFF"}]};
+    filterTree(tree, [{name:"invert", args:"1"}]);
+    expect(tree.children[0].fill).toBe("#FFFFFF");
+    expect(tree.children[0].children[0].fill).toBe("#FFFFFF");
+    expect(tree.children[1].fill).toBe("#000000");
+  });
+
+  test("lets an ancestor's filter reach a drop shadow and an image's background", () => {
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 80, 40], {filter:"invert(1)"}],
+      ["0.0", "div", [0, 0, 40, 20], {backgroundColor:"rgb(255, 0, 0)", filter:"drop-shadow(rgb(0, 0, 0) 0px 0px 2px)"}],
+      ["0.1", "img", [40, 0, 40, 20], {backgroundColor:"rgb(255, 0, 0)", borderTopLeftRadius:"4px", borderTopRightRadius:"4px", borderBottomRightRadius:"4px", borderBottomLeftRadius:"4px"}, {attributes:{currentSrc:"https://example.test/a.png", effectiveFilter:"invert(1)"}}]));
+    const [box, image] = root.children;
+    expect(box.effect.color).toBe("#FFFFFF");
+    expect(image.fill).toBe("#00FFFF");
+    // The pixels took the page's chain once.
+    expect(image.children[0].fill.filter).toBe("invert(1)");
+  });
+
+  test("keeps an elliptical box's shadow on the frame when the frame clips", () => {
+    const corners = Object.fromEntries(["borderTopLeftRadius", "borderTopRightRadius", "borderBottomRightRadius", "borderBottomLeftRadius"].map((key) => [key, "40px 10px"]));
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 120, 60], {...corners, overflow:"hidden", boxShadow:"rgb(0, 0, 0) 0px 4px 12px 0px"}]));
+    expect(root).toMatchObject({clip:true, effect:{shadowType:"outer"}});
+    expect(root.children[0].effect).toBeUndefined();
   });
 });

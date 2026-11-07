@@ -1,9 +1,14 @@
 import { createSelectionState, selectChild, selectParent, setHoveredTarget } from "../selection/navigation.mjs";
 import { captureProgressForElapsed } from "./capture-progress.mjs";
+import { captureThisFrame } from "./capture-frame.mjs";
 import { captureSelection } from "./capture-selection.mjs";
 import { isPageCaptureShortcut, pageCaptureModifier } from "./shortcuts.mjs";
 
 const CONTROLLER_KEY = "__openPencilCaptureController";
+
+// The service worker calls this, in this script's isolated world, when the page around a frame of
+// another origin captures it; page scripts cannot reach it.
+globalThis.__openPencilCaptureFrame = captureThisFrame;
 const FRAME_ACTIVITY_MESSAGE = "openpencil-capture:frame-activity";
 const FRAME_CANCEL_MESSAGE = "openpencil-capture:frame-cancel";
 const CAPTURE_TIMEOUT_MS = 65_000;
@@ -118,6 +123,8 @@ function install() {
     </div>
     <div class="outline"></div>`;
   document.documentElement.append(host);
+  // The picker's own interface is never part of a capture.
+  globalThis.__openPencilCaptureHost = host;
   const toolbar = shadow.querySelector(".toolbar");
   const outline = shadow.querySelector(".outline");
   const selectionView = shadow.querySelector(".selection-view");

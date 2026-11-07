@@ -2,6 +2,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
+import { mergeFrameCapture } from "./capture-element.mjs";
 
 const moduleDir = dirname(fileURLToPath(import.meta.url));
 
@@ -15,6 +16,45 @@ export async function captureBundle() {
   const source = await readFile(resolve(moduleDir, "capture-element.mjs"), "utf8");
   if (/^\s*import\s/m.test(source)) throw new Error("capture-element.mjs must remain self-contained for browser injection");
   return `${source.replace(/\bexport\s+/g, "")}\n;globalThis.OpenPencilCapture={captureElement};\n`;
+}
+
+// In the page, the capture lists the frames of another origin it cannot read and keeps their
+// elements, in that order, for this side to find them.
+const captureIn = (handle, options) => handle.evaluate((element, captureOptions) => {
+  globalThis.__openPencilFrameElements = [];
+  const captureFrame = (frame) => {
+    globalThis.__openPencilFrameElements.push(frame);
+    return null;
+  };
+  return globalThis.OpenPencilCapture.captureElement(element, {...captureOptions, url:captureOptions.url || location.href, captureFrame});
+}, options);
+
+// Each frame of another origin is captured in its own document, Playwright reaching where the page
+// cannot, and merged where its <iframe> shows it; frames inside it the same way.
+async function fillFrames(owner, capture, script, depth = 0) {
+  const requests = capture.frames || [];
+  delete capture.frames;
+  for (const [index, request] of requests.entries()) {
+    try {
+      const element = (await owner.evaluateHandle((at) => globalThis.__openPencilFrameElements?.[at] || null, index)).asElement();
+      const frame = element && await element.contentFrame();
+      if (!frame || depth > 8) continue;
+      await frame.addScriptTag({content:script});
+      const framed = await captureIn(await frame.evaluateHandle(() => document.documentElement), {frame:{clip:request.clip}, capturedAt:capture.capturedAt});
+      await fillFrames(frame, framed, script, depth + 1);
+      mergeFrameCapture(capture, request, framed);
+    } catch {
+      // A frame that navigated away or refuses scripts stays an empty frame.
+    }
+  }
+  return capture;
+}
+
+/** Captures `locator`'s element, frames of other origins included. */
+export async function captureTarget(locator, options, script) {
+  const handle = await locator.elementHandle();
+  const capture = await captureIn(handle, options);
+  return fillFrames(await handle.ownerFrame(), capture, script);
 }
 
 export async function captureUrl(options) {
@@ -51,9 +91,7 @@ export async function captureUrl(options) {
     await target.waitFor({state: "visible", timeout: 30_000});
     await page.waitForTimeout(settleMs);
     await page.addScriptTag({content: script});
-    const capture = await target.evaluate((element, captureOptions) => {
-      return globalThis.OpenPencilCapture.captureElement(element, captureOptions);
-    }, {url, selector, label: options.label ?? null, capturedAt});
+    const capture = await captureTarget(target, {url, selector, label: options.label ?? null, capturedAt}, script);
     capture.environment = {
       locale: String(options.locale ?? "en-US"),
       timezone: String(options.timezone ?? "UTC"),

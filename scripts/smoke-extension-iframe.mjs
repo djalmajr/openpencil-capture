@@ -154,10 +154,18 @@ try {
     const host = document.getElementById("__openpencil_capture_host__");
     return host && !host.shadowRoot.querySelector(".success-view").hidden;
   }, null, {timeout:30_000});
+  // That capture took the top page, so the frame of another origin inside it comes along, read
+  // in its own document by the extension's script there.
+  const pageTexts = [];
+  const collectPage = (node) => { if (node.type === "TEXT") pageTexts.push(node.text); node.children?.forEach(collectPage); };
+  parseOpenPencilClipboard(await page.evaluate(() => navigator.clipboard.readText()))?.nodes.forEach(collectPage);
+  const pageCapture = {frameText:pageTexts.includes("Payout Threshold"), frameShadow:pageTexts.includes("Inside a closed shadow root"), ownInterface:pageTexts.some((text) => /Capturing|Copied|Select/.test(text))};
+  if (pageCapture.ownInterface) throw new Error(`The page capture took the picker's own interface: ${JSON.stringify(pageTexts)}`);
+  if (!pageCapture.frameText || !pageCapture.frameShadow) throw new Error(`The page capture left out the frame of another origin: ${JSON.stringify({pageCapture, pageTexts})}`);
   await clickToolbarButton();
   const closed = await pickerViews();
   if (closed.some((view) => view !== "closed")) throw new Error(`The button left pickers open: ${JSON.stringify(closed)}`);
-  console.log(JSON.stringify({loadedExtension:true, crossOrigin:true, clipboard, escaped, reopened, closed}));
+  console.log(JSON.stringify({loadedExtension:true, crossOrigin:true, clipboard, pageCapture, escaped, reopened, closed}));
 } finally {
   await context?.close();
   topServer.stop(true);

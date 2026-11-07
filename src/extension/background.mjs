@@ -1,4 +1,5 @@
 import { fetchExtensionAsset } from "./asset-fetch.mjs";
+import { FRAME_CAPTURE_MESSAGE, frameRequest } from "./frame-request.mjs";
 
 const OFFSCREEN_URL = "offscreen.html";
 let creatingOffscreenDocument;
@@ -48,7 +49,19 @@ chrome.action.onClicked.addListener(async (tab) => {
   if (tab.id) await toggleCapture(tab.id);
 });
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+// A frame of another origin, captured for the page around it: only in the asking tab, by the
+// content script already running in each frame's isolated world, which answers only if it is the
+// frame asked for.
+async function captureFrame(message, sender) {
+  const tabId = sender.tab?.id;
+  const request = frameRequest(message);
+  if (sender.id !== chrome.runtime.id || !Number.isInteger(tabId) || !request) return {ok:false, error:"Invalid frame capture request"};
+  const results = await chrome.scripting.executeScript({target:{tabId, allFrames:true}, func:(asked) => globalThis.__openPencilCaptureFrame?.(asked) ?? null, args:[request]});
+  return {ok:true, capture:results.find((result) => result?.result)?.result ?? null};
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === FRAME_CAPTURE_MESSAGE) return respondWith(() => captureFrame(message, sender), sendResponse);
   if (message?.type === "openpencil-capture:write-clipboard") {
     return respondWith(() => askOffscreenDocument({type:"openpencil-capture:offscreen-write", html:message.html}), sendResponse);
   }

@@ -22,3 +22,14 @@ jobs:
       - run: bun run verify
       - run: bun run smoke:iframe
       - run: bun run smoke:extension-iframe
+      # Every build of main can be downloaded and loaded by hand, or uploaded to the Store.
+      - name: Package extension
+        if: github.event_name == 'push'
+        run: bun run package:ext
+      - name: Upload extension package
+        if: github.event_name == 'push'
+        uses: actions/upload-artifact@v4
+        with:
+          name: openpencil-capture-extension
+          path: artifacts/openpencil-capture-*.zip
+          if-no-files-found: error

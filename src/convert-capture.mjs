@@ -76,8 +76,10 @@ function ellipticalBoxLayers(node, radii, {fills, border, shadows}) {
   ]);
   if (border.dashPattern) {
     const half = Object.fromEntries(Object.entries(widths).map(([side, value]) => [side, value / 2]));
+    const strokeWidth = Math.max(...Object.values(widths));
+    const style = ["Top", "Right", "Bottom", "Left"].map((side) => node.styles[`border${side}Style`]).find((value) => value === "dashed" || value === "dotted");
     layers.push({...base, name:`${name} · Border`, geometry:roundedBoxPath(inset(half), shrink(half)), fill:"#00000000",
-      stroke:border.stroke, strokeWidth:Math.max(...Object.values(widths)), strokeLinecap:"butt", dashPattern:border.dashPattern});
+      stroke:border.stroke, strokeWidth, ...loopDashes(style, strokeWidth, outlinePerimeter(inset(half), measuredCorners(shrink(half))))});
   } else {
     layers.push({...base, name:`${name} · Border`, geometry:`${outer} ${roundedBoxPath(inset(widths), shrink(widths))}`, fillRule:"evenodd", fill:border.stroke});
   }
@@ -409,6 +411,78 @@ function borderDashes(style, width) {
   if (style === "dashed") return {dashPattern:width < 3 ? [width * 3, width * 2] : [width * 2, width]};
   if (style === "dotted") return {dashPattern:[width, width]};
   return {};
+}
+
+// How Chromium lays dashes along one side, measured: the side runs corner to corner, starts and
+// ends on a dash, and stretches or shrinks its gaps to fit a whole number of dashes, taking the
+// count whose gap is closest to the nominal one. Null when the side is too short to dash.
+function sideDashes(length, dash, gap) {
+  if (!(length > dash + gap)) return null;
+  const gapFor = (count) => (length - count * dash) / (count - 1);
+  const fewer = Math.max(2, Math.floor((length + gap) / (dash + gap)));
+  const counts = [fewer, fewer + 1].filter((count) => gapFor(count) >= 0);
+  const count = counts.reduce((best, count) => Math.abs(gapFor(count) - gap) <= Math.abs(gapFor(best) - gap) ? count : best);
+  return {count, gap:gapFor(count)};
+}
+
+// A rounded border dashes as one loop along the middle of the border, from where the top side
+// leaves its left corner, clockwise; its gaps fit a whole number of dashes around, the count
+// whose gap is closest to the nominal one, as Chromium draws it. Chromium measures that loop with
+// its corners half a pixel wider than it draws them (measured on 2 to 6 pixel borders), so
+// `perimeter` is that length and the last dash runs slightly into the first.
+function loopDashes(style, width, perimeter) {
+  const roundDots = style === "dotted" && width >= 3;
+  const [dash, gap] = style === "dotted" ? [width, width] : width < 3 ? [width * 3, width * 2] : [width * 2, width];
+  const gapFor = (count) => (perimeter - count * dash) / count;
+  const fewer = Math.max(1, Math.floor(perimeter / (dash + gap)));
+  const counts = [fewer, fewer + 1].filter((count) => gapFor(count) >= 0);
+  if (!counts.length) return {};
+  const count = counts.reduce((best, count) => Math.abs(gapFor(count) - gap) < Math.abs(gapFor(best) - gap) ? count : best);
+  return roundDots
+    ? {strokeLinecap:"round", dashPattern:[0, round(perimeter / count, 4)]}
+    : {strokeLinecap:"butt", dashPattern:[dash, round(gapFor(count), 4)]};
+}
+
+const measuredCorners = (radii) => radii.map(([rx, ry]) => rx > 0 && ry > 0 ? [rx + 0.5, ry + 0.5] : [0, 0]);
+
+// The length around a box with elliptical corners (Ramanujan's approximation for each quarter).
+function outlinePerimeter({width, height}, radii) {
+  const [tl, tr, br, bl] = radii;
+  const quarter = ([a, b]) => a > 0 && b > 0 ? Math.PI * (3 * (a + b) - Math.sqrt((3 * a + b) * (a + 3 * b))) / 4 : 0;
+  return width - tl[0] - tr[0] + width - bl[0] - br[0] + height - tr[1] - br[1] + height - tl[1] - bl[1] + radii.reduce((sum, corner) => sum + quarter(corner), 0);
+}
+
+/**
+ * A dashed or dotted border with square corners, one line per side, so each side's dashes start
+ * and end at its corners as Chromium draws them: the editor would start one dash pattern at a
+ * corner and run it around. Dots of three pixels and more are round, thinner ones square.
+ */
+function borderSideLines(node, fallbackColor) {
+  const width = round(node.rect.width);
+  const height = round(node.rect.height);
+  const sides = {
+    Top:(w) => [`M 0 ${round(w / 2)} H ${width}`, width, (inset) => `M ${round(inset)} ${round(w / 2)} H ${round(width - inset)}`],
+    Right:(w) => [`M ${round(width - w / 2)} 0 V ${height}`, height, (inset) => `M ${round(width - w / 2)} ${round(inset)} V ${round(height - inset)}`],
+    Bottom:(w) => [`M 0 ${round(height - w / 2)} H ${width}`, width, (inset) => `M ${round(inset)} ${round(height - w / 2)} H ${round(width - inset)}`],
+    Left:(w) => [`M ${round(w / 2)} 0 V ${height}`, height, (inset) => `M ${round(w / 2)} ${round(inset)} V ${round(height - inset)}`],
+  };
+  return Object.entries(sides).flatMap(([side, geometryFor]) => {
+    const w = round(px(node.styles[`border${side}Width`]));
+    const style = node.styles[`border${side}Style`];
+    if (!(w > 0) || ["none", "hidden"].includes(style)) return [];
+    const color = safeColor(node.styles[`border${side}Color`]) || fallbackColor;
+    if (!color) return [];
+    const [line, length, insetLine] = geometryFor(w);
+    const base = {type:"path", name:`${semanticLayerName(node)} · Border ${side.toLowerCase()}`, layoutPosition:"absolute", x:0, y:0, width, height,
+      viewBox:[0, 0, width, height], fill:"#00000000", stroke:color, strokeWidth:w, strokeLinecap:"butt"};
+    if (style === "dotted" && w >= 3) {
+      const dots = sideDashes(length, w, w);
+      return [dots ? {...base, geometry:insetLine(w / 2), strokeLinecap:"round", dashPattern:[0, round((length - w) / (dots.count - 1), 4)]} : {...base, geometry:line}];
+    }
+    const [dash, gap] = style === "dotted" ? [w, w] : style === "dashed" ? (w < 3 ? [w * 3, w * 2] : [w * 2, w]) : [0, 0];
+    const fitted = dash ? sideDashes(length, dash, gap) : null;
+    return [{...base, geometry:line, ...(fitted ? {dashPattern:[dash, round(fitted.gap, 4)]} : {})}];
+  });
 }
 
 // `stroke-dasharray` in the SVG's units, scaled like the stroke; an odd list repeats once.
@@ -932,6 +1006,24 @@ export function convertCaptureToTree(capture) {
         ...(layer.region ? {} : {cornerRadius:cornerRadius(node)}),fill:withBlend(layer.fill),
       }));
       if (repeatingPattern) frame.children.push(repeatingPattern);
+    }
+    // Square corners let each side of a dashed border be its own line, dashed from its corners;
+    // round ones dash it as one loop along the middle of the border.
+    if (framed && !elliptical && border.dashPattern && border.stroke) {
+      const radii = [cornerRadius(node)].flat();
+      const corners = radii.length === 1 ? [radii[0], radii[0], radii[0], radii[0]] : radii;
+      // Chromium dashes a rounded border as a loop once its inner edge is rounded too.
+      if (corners.every((radius) => typeof border.strokeWidth === "number" ? radius <= border.strokeWidth : radius === 0)) frame.children.push(...borderSideLines(node, border.stroke));
+      else if (typeof border.strokeWidth === "number") {
+        const w = border.strokeWidth;
+        const box = {x:w / 2, y:w / 2, width:frameRect.width - w, height:frameRect.height - w};
+        const middle = corners.map((radius) => radius > w / 2 ? [radius - w / 2, radius - w / 2] : [0, 0]);
+        const style = ["Top", "Right", "Bottom", "Left"].map((side) => node.styles[`border${side}Style`]).find((value) => value === "dashed" || value === "dotted");
+        frame.children.push({type:"path", name:`${semanticLayerName(node)} · Border`, layoutPosition:"absolute", x:0, y:0, width:frameRect.width, height:frameRect.height,
+          viewBox:[0, 0, frameRect.width, frameRect.height], geometry:roundedBoxPath(box, middle), fill:"#00000000", stroke:border.stroke, strokeWidth:w,
+          ...loopDashes(style, w, outlinePerimeter(box, measuredCorners(middle)))});
+      }
+      if (frame.children.length && frame.children.at(-1).name?.includes(" · Border")) for (const key of ["stroke", "strokeWidth", "strokeAlignment", "dashPattern"]) delete frame[key];
     }
     for (const layer of layers) {
       if (layer.fill.type === "image" && !layer.fill.gradient) stats.images += 1;

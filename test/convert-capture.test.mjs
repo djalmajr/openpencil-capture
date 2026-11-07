@@ -175,9 +175,12 @@ describe("convertCaptureToTree", () => {
 
   test("dashes and dots borders the way Chromium draws them", () => {
     const border = (style, width) => convertCaptureToTree(ir(["0", "div", [0, 0, 80, 40], Object.fromEntries(["Top", "Right", "Bottom", "Left"].flatMap((side) => [[`border${side}Width`, `${width}px`], [`border${side}Style`, style], [`border${side}Color`, "rgb(0, 0, 0)"]]))])).root;
-    expect(border("dashed", 2).dashPattern).toEqual([6, 4]);
-    expect(border("dashed", 4).dashPattern).toEqual([8, 4]);
-    expect(border("dotted", 2).dashPattern).toEqual([2, 2]);
+    // The fixture's corners round by 8px, so the dashes run as one loop on a child vector.
+    expect(border("dashed", 2).children[0].dashPattern[0]).toBe(6);
+    expect(border("dashed", 4).children[0].dashPattern[0]).toBe(8);
+    expect(border("dotted", 2).children[0].dashPattern[0]).toBe(2);
+    expect(border("dashed", 2).dashPattern).toBeUndefined();
+    expect(border("solid", 2)).toMatchObject({stroke:"#000000", strokeWidth:2});
     expect(border("solid", 2).dashPattern).toBeUndefined();
     expect(border("hidden", 2).stroke).toBeUndefined();
   });
@@ -579,12 +582,41 @@ describe("elliptical corners", () => {
     const [background, border] = root.children;
     expect(background).toMatchObject({type:"path", fill:"#FF0000", effect:{shadowType:"outer", color:"#000000"}, geometry:"M 50 0 H 50 A 50 25 0 0 1 100 25 V 25 A 50 25 0 0 1 50 50 H 50 A 50 25 0 0 1 0 25 V 25 A 50 25 0 0 1 50 0 Z"});
     // A dashed border runs along the middle of the ring, its corners shrunk by half its width.
-    expect(border).toMatchObject({type:"path", stroke:"#0000FF", strokeWidth:2, dashPattern:[6, 4], geometry:expect.stringContaining("A 49 24 0 0 1 99 25")});
+    expect(border).toMatchObject({type:"path", stroke:"#0000FF", strokeWidth:2, dashPattern:[6, expect.closeTo(4, 0)], geometry:expect.stringContaining("A 49 24 0 0 1 99 25")});
   });
 
   test("keeps circular corners on the frame", () => {
     const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 100, 50], corners("10px")]));
     expect(root.cornerRadius).toBe(10);
     expect(root.children).toEqual([]);
+  });
+});
+
+describe("dashed borders", () => {
+  const sides = (style, width) => Object.fromEntries(["Top", "Right", "Bottom", "Left"].flatMap((side) => [[`border${side}Style`, style], [`border${side}Width`, width], [`border${side}Color`, "rgb(0, 0, 0)"]]));
+  const square = {borderTopLeftRadius:"0px", borderTopRightRadius:"0px", borderBottomRightRadius:"0px", borderBottomLeftRadius:"0px"};
+  test("fits whole dashes on each side, from corner to corner, as Chromium does", () => {
+    // Chromium draws a 160 × 96 box's 4px dashed border with 14 dashes of 8px on top and 8 on the side.
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 160, 96], {...square, ...sides("dashed", "4px")}]));
+    expect(root.stroke).toBeUndefined();
+    const [top, right] = root.children;
+    expect(top).toMatchObject({type:"path", geometry:"M 0 2 H 160", strokeWidth:4, dashPattern:[8, 3.6923]});
+    expect(right).toMatchObject({geometry:"M 158 0 V 96", dashPattern:[8, 4.5714]});
+  });
+
+  test("draws thick dots round, centered from corner to corner", () => {
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 160, 96], {...square, ...sides("dotted", "4px")}]));
+    expect(root.children[0]).toMatchObject({geometry:"M 2 2 H 158", strokeLinecap:"round", dashPattern:[0, 7.8]});
+  });
+
+  test("dashes a rounded border as one loop along its middle, once its inner edge is rounded", () => {
+    const corners = (radius) => ({borderTopLeftRadius:radius, borderTopRightRadius:radius, borderBottomRightRadius:radius, borderBottomLeftRadius:radius});
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 160, 96], {...corners("16px"), ...sides("dashed", "4px")}]));
+    expect(root.stroke).toBeUndefined();
+    expect(root.children).toHaveLength(1);
+    // Chromium fits 39 dashes of 8px around this loop, with a period of 12.08.
+    expect(root.children[0]).toMatchObject({geometry:expect.stringMatching(/^M 16 2 H 144 A 14 14 0 0 1 158 16/), dashPattern:[8, expect.closeTo(4.08, 1)]});
+    // A radius no larger than the border leaves the inner edge square, and the sides dash apart.
+    expect(convertCaptureToTree(ir(["0", "div", [0, 0, 160, 96], {...corners("3px"), ...sides("dashed", "4px")}])).root.children).toHaveLength(4);
   });
 });

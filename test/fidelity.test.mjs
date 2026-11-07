@@ -28,15 +28,19 @@ async function fidelity(html, before, {crop = false} = {}) {
   const rendered = await renderInEditor(capture);
   const page = await decodePng(png);
   const editor = await decodePng(await rendered.render());
-  return {difference:meanDifference(page, crop ? cropImage(editor, page.width, page.height) : editor), tree:rendered.tree};
+  return {difference:meanDifference(page, crop ? cropImage(editor, page.width, page.height, crop) : editor), tree:rendered.tree};
 }
 
 // The editor exports a masked group with the bounds of what it masks, so content a mask cuts
-// away can widen the image past the element; the element is its top-left corner.
-function cropImage(image, width, height) {
+// away can widen the image past the element, which is then its top-left corner. A border line's
+// export bounds take half its width past each end, butt caps included, which centers the element.
+function cropImage(image, width, height, at) {
   if (image.width < width || image.height < height) return image;
+  const left = at === "center" ? (image.width - width) / 2 : 0;
+  const top = at === "center" ? (image.height - height) / 2 : 0;
+  if (!Number.isInteger(left) || !Number.isInteger(top)) return image;
   const data = new Uint8Array(width * height * 4);
-  for (let y = 0; y < height; y += 1) data.set(image.data.subarray(y * image.width * 4, (y * image.width + width) * 4), y * width * 4);
+  for (let y = 0; y < height; y += 1) data.set(image.data.subarray(((y + top) * image.width + left) * 4, ((y + top) * image.width + left + width) * 4), y * width * 4);
   return {width, height, data};
 }
 
@@ -84,6 +88,13 @@ describe("the pasted design looks like the page", () => {
     "an inverted box with a filtered child": box("background:rgb(255, 255, 255);filter:invert(1)", `<div style="margin:16px;width:80px;height:40px;background:rgb(20, 120, 220);filter:contrast(1.6)"></div>`),
     "an ellipse drawn with border-radius 50% and a border": box("background:rgb(240, 180, 40);border:6px solid rgb(40, 40, 120);box-sizing:border-box;border-radius:50%"),
     "corners with two radii each, and borders of different widths": box("background:linear-gradient(rgb(0, 160, 200), rgb(0, 60, 120));border-style:solid;border-color:rgb(220, 60, 60);border-width:4px 10px 6px 2px;box-sizing:border-box;border-radius:60px 10px 30px 0 / 30px 40px 10px 0"),
+    "a dashed border": box("background:rgb(255, 255, 255);border:4px dashed rgb(30, 30, 160);box-sizing:border-box"),
+    "a thin dashed border": box("background:rgb(255, 255, 255);border:2px dashed rgb(30, 30, 30);box-sizing:border-box"),
+    "a round dotted border": box("background:rgb(255, 255, 255);border:6px dotted rgb(200, 40, 40);box-sizing:border-box"),
+    "dashed sides of different widths and styles": box("background:rgb(250, 250, 240);border-style:dashed solid dotted dashed;border-width:2px 5px 4px 6px;border-color:rgb(20, 120, 60);box-sizing:border-box"),
+    "a rounded dashed border": box("background:rgb(255, 255, 255);border:4px dashed rgb(30, 30, 160);border-radius:16px;box-sizing:border-box"),
+    "a rounded thin dashed border": box("background:rgb(255, 255, 255);border:2px dashed rgb(30, 30, 30);border-radius:12px;box-sizing:border-box"),
+    "a rounded dotted border": box("background:rgb(255, 255, 255);border:4px dotted rgb(200, 40, 40);border-radius:30px;box-sizing:border-box"),
     "a polygon clip path": box("background:rgb(30, 130, 220);clip-path:polygon(50% 0, 100% 100%, 0 100%)"),
     "a circle clip path off center": box("background:linear-gradient(rgb(255, 120, 0), rgb(120, 0, 200));clip-path:circle(40px at 60% 50%)"),
     "an inset clip path with round corners": box("background:rgb(220, 40, 90);clip-path:inset(10px 20px round 12px)"),
@@ -104,7 +115,7 @@ describe("the pasted design looks like the page", () => {
   };
   for (const [name, html] of Object.entries(cases)) {
     test(name, async () => {
-      const {difference} = await fidelity(html.includes("<x-card") ? `<script>customElements.define("x-card", class extends HTMLElement { constructor() { super(); this.attachShadow({mode:"open"}).innerHTML = '<div style="position:absolute;margin:20px 0 0 60px;width:80px;height:50px;background:rgb(240, 90, 30)"></div><div style="padding:8px"><slot></slot></div>'; } });</script>${html}` : html, name.startsWith("a scrolled") ? () => { document.querySelector("#root").scrollTop = 120; } : undefined, {crop:name.includes("overflows")});
+      const {difference} = await fidelity(html.includes("<x-card") ? `<script>customElements.define("x-card", class extends HTMLElement { constructor() { super(); this.attachShadow({mode:"open"}).innerHTML = '<div style="position:absolute;margin:20px 0 0 60px;width:80px;height:50px;background:rgb(240, 90, 30)"></div><div style="padding:8px"><slot></slot></div>'; } });</script>${html}` : html, name.startsWith("a scrolled") ? () => { document.querySelector("#root").scrollTop = 120; } : undefined, {crop:name.includes("overflows") ? "corner" : /dashed|dotted/.test(name) ? "center" : false});
       expect(difference).toBeLessThan(THRESHOLD);
     });
   }

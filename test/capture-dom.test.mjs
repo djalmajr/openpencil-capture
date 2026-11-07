@@ -4,6 +4,7 @@ import { convertCaptureToTree, cssColorToHex } from "../src/convert-capture.mjs"
 import { hexToColor } from "../src/scene-nodes.mjs";
 import { decodePng, renderInEditor } from "./support/render.mjs";
 import { useBrowser } from "./support/browser.mjs";
+import { captureBundle } from "../src/capture-url.mjs";
 
 const captureHtml = useBrowser();
 setDefaultTimeout(20_000);
@@ -148,9 +149,22 @@ describe("text", () => {
 });
 
 describe("documents inside the page", () => {
-  test("leaves a cross-origin frame empty without failing the capture", async () => {
+  test("captures a frame the page cannot read in the frame's own document", async () => {
     const capture = await captureHtml(`<div id="root"><iframe src="data:text/html,<p>elsewhere</p>" style="width:100px;height:50px"></iframe></div>`);
+    expect(capture.nodes.map((node) => node.tag)).toEqual(["div", "iframe", "html", "body", "p"]);
+    expect(capture.nodes.at(-1)).toMatchObject({path:"0.0.0.1.0", parentPath:"0.0.0.1", text:"elsewhere"});
+  });
+
+  test("leaves the frame empty when nothing can reach it, and lists it", async () => {
+    const script = await captureBundle();
+    const capture = await captureHtml.evaluate(async (bundle) => {
+      document.body.innerHTML = `<div id="root"><iframe src="data:text/html,<p>elsewhere</p>" style="width:100px;height:50px;border:2px solid"></iframe></div>`;
+      await new Promise((resolve) => document.querySelector("iframe").addEventListener("load", resolve));
+      new Function(bundle)();
+      return globalThis.OpenPencilCapture.captureElement(document.querySelector("#root"), {captureFrame:() => { throw new Error("unreachable"); }});
+    }, script);
     expect(capture.nodes.map((node) => node.tag)).toEqual(["div", "iframe"]);
+    expect(capture.frames).toEqual([{path:"0.0", offset:{x:2, y:2}, clip:{left:0, top:0, right:100, bottom:50}}]);
   });
 
   test("reads an open shadow root and what its slot shows, not the light DOM it replaces", async () => {
@@ -275,6 +289,19 @@ describe("list markers", () => {
       expect(markers.map((marker) => marker.text || marker.attributes.markerSymbol)).toEqual({discs:["disc", "disc"], circles:["circle", "circle"], the:["disclosure-closed", "disclosure-open"], squares:["square", "square"], numbers:["8.", "9.", "10."], roman:["I.", "IV."]}[name.split(" ")[0]]);
     });
   }
+});
+
+describe("a frame from another origin", () => {
+  const frame = `<body style="margin:0;font:14px Arial"><p style="margin:4px">visible-frame-text</p><p style="position:absolute;top:300px">below-the-frame-secret</p><p style="position:absolute;left:4px;top:40px">clipped-by-the-page-secret</p></body>`;
+  test("is captured in its own document, only where it shows", async () => {
+    const capture = await captureHtml(`<div id="root" style="width:200px;height:50px;overflow:hidden;padding:0"><iframe src="https://frames.test/f.html" style="border:0;width:200px;height:120px;display:block"></iframe></div>`, "#root", {files:{"https://frames.test/f.html":frame}});
+    expect(texts(convertCaptureToTree(capture))).toContain("visible-frame-text");
+    // Below the frame's viewport, and inside it but under the page's clip: neither is drawn.
+    expect(leaked(capture, ["below-the-frame-secret", "clipped-by-the-page-secret"])).toEqual([]);
+    const text = capture.nodes.find((node) => node.text === "visible-frame-text");
+    expect(text.parentPath.startsWith("0.0.0")).toBe(true);
+    expect(capture.frames).toBeUndefined();
+  });
 });
 
 describe("a <use> that references another file", () => {

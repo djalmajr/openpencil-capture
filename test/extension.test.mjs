@@ -6,6 +6,7 @@ import { createOpenPencilClipboardHtml } from "../src/openpencil-clipboard.mjs";
 import { fetchExtensionAsset } from "../src/extension/asset-fetch.mjs";
 import { effectiveFilter } from "../src/capture-element.mjs";
 import { captureProgressForElapsed } from "../src/extension/capture-progress.mjs";
+import { frameRequest, framePath } from "../src/extension/frame-request.mjs";
 import { isBakedFilter, rasterSize } from "../src/extension/rasterize.mjs";
 import { waitForVisualStability } from "../src/extension/visual-stability.mjs";
 import { writeClipboardPayload } from "../src/extension/write-clipboard.mjs";
@@ -242,5 +243,29 @@ describe("capture shortcuts", () => {
   test("distinguishes element and whole-page capture", () => {
     expect(isPageCaptureShortcut({ key:"Enter", metaKey:true, ctrlKey:false })).toBe(true);
     expect(isPageCaptureShortcut({ key:"Enter", metaKey:false, ctrlKey:false })).toBe(false);
+  });
+});
+
+// Security boundary: a frame capture runs only in the asking tab, in the frame the request names.
+describe("frame capture requests", () => {
+  test("pass on only a well-formed place, area and size", () => {
+    const valid = {path:[0, 2], clip:{left:0, top:0, right:100, bottom:50}, size:{width:100, height:80}};
+    expect(frameRequest({...valid, extra:"ignored"})).toEqual(valid);
+    for (const broken of [{path:[]}, {path:[-1]}, {path:[1.5]}, {path:"0"}, {path:Array(17).fill(0)}, {clip:{left:0, top:0, right:"1", bottom:2}}, {size:{width:Number.NaN, height:1}}]) {
+      expect(frameRequest({...valid, ...broken})).toBeNull();
+    }
+  });
+
+  test("name a frame by its index under each parent, from the top", () => {
+    const top = {length:2};
+    top.parent = top;
+    const first = {parent:top, length:0};
+    const second = {parent:top, length:1};
+    const inner = {parent:second, length:0};
+    Object.assign(top, {0:first, 1:second});
+    second[0] = inner;
+    expect(framePath(top)).toEqual([]);
+    expect(framePath(inner)).toEqual([1, 0]);
+    expect(framePath({parent:top})).toBeNull();
   });
 });

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll } from "bun:test";
 import { chromium } from "playwright";
-import { captureBundle } from "../../src/capture-url.mjs";
+import { captureBundle, captureTarget } from "../../src/capture-url.mjs";
 
 // One Chromium for the whole file: each capture opens a page, renders the fixture, and runs the
 // same bundle the CLI injects.
@@ -18,10 +18,13 @@ export function useBrowser() {
     try {
       const document = `<!doctype html><html><body style="margin:0">${html}</body></html>`;
       if (files) {
-        await page.route("https://example.test/**", (route) => {
-          const path = new URL(route.request().url()).pathname;
-          if (path === "/page") return route.fulfill({contentType:"text/html", body:document});
-          return files[path] ? route.fulfill({contentType:"image/svg+xml", body:files[path]}) : route.fulfill({status:404, body:""});
+        // A path serves on the page's origin, a full url on its own; .html files as pages.
+        await page.route(/^https:\/\/[a-z.]+\.test\//, (route) => {
+          const url = new URL(route.request().url());
+          if (url.href === "https://example.test/page") return route.fulfill({contentType:"text/html", body:document});
+          const body = url.origin === "https://example.test" ? files[url.pathname] : files[url.href];
+          if (body == null) return route.fulfill({status:404, body:""});
+          return route.fulfill({contentType:url.pathname.endsWith(".html") ? "text/html" : "image/svg+xml", body});
         });
         await page.goto("https://example.test/page", {waitUntil:"load"});
       } else {
@@ -31,7 +34,7 @@ export function useBrowser() {
       if (requests) page.on("request", (request) => requests.push(request.url()));
       await page.addScriptTag({content:state.script});
       const png = screenshot ? await page.locator(selector).screenshot({animations:"disabled"}) : null;
-      const capture = await page.evaluate((selector) => globalThis.OpenPencilCapture.captureElement(document.querySelector(selector), {url:"https://example.test/page", capturedAt:"2026-11-07T00:00:00.000Z"}), selector);
+      const capture = await captureTarget(page.locator(selector).first(), {url:"https://example.test/page", capturedAt:"2026-11-07T00:00:00.000Z"}, state.script);
       return screenshot ? {capture, png} : capture;
     } finally {
       await page.close();

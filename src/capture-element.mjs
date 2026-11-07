@@ -694,8 +694,11 @@ export async function captureElement(root, options = {}) {
   if (typeof Element === "undefined" || !(root instanceof Element)) {
     throw new TypeError("captureElement expects a DOM Element");
   }
-  if (!isRendered(root)) throw new Error("The selected element is not visible");
-  const rootRect = root.getBoundingClientRect();
+  // A frame's document captured on its own (`options.frame`) is placed in its viewport, where the
+  // page around it puts it; elsewhere the selection's own box is the origin.
+  const asFrame = Boolean(options.frame);
+  if (!asFrame && !isRendered(root)) throw new Error("The selected element is not visible");
+  const rootRect = asFrame ? {x:0, y:0} : root.getBoundingClientRect();
   // The page's canvas starts at the document origin: anything left of or above it cannot be seen.
   const view = root.ownerDocument.defaultView;
   const nodes = [];
@@ -708,6 +711,8 @@ export async function captureElement(root, options = {}) {
     const isSvg = node.namespaceURI === SVG_NAMESPACE;
     const inResources = context.inResources || (isSvg && SVG_RESOURCES.has(tag.toLowerCase()));
     if (node !== root && !inResources && !isRendered(node)) return;
+    // The capturing tool's own interface, when it lives in the page.
+    if (node !== root && options.ignore?.(node)) return;
     if (isSvg && tag === "use" && !inResources) return visitUse(node, path, parentPath, context);
     const {offset} = context;
     const raw = node.getBoundingClientRect();
@@ -785,13 +790,22 @@ export async function captureElement(root, options = {}) {
       attributes,
     });
     // `visibility` does not inherit into a frame's document, so a hidden frame hides it here.
-    if (frame && shown) {
+    const framesDocument = ["iframe", "frame"].includes(tag) && shown;
+    if (framesDocument) {
       // A frame's document lays out in its own viewport, which starts at the frame's content box.
       const left = box.left + node.clientLeft + Number.parseFloat(computed.paddingLeft || 0);
       const top = box.top + node.clientTop + Number.parseFloat(computed.paddingTop || 0);
       const viewport = {left, top, right:left + node.clientWidth - Number.parseFloat(computed.paddingLeft || 0) - Number.parseFloat(computed.paddingRight || 0), bottom:top + node.clientHeight - Number.parseFloat(computed.paddingTop || 0) - Number.parseFloat(computed.paddingBottom || 0)};
       const frameClip = {left:Math.max(clip.left, viewport.left), top:Math.max(clip.top, viewport.top), right:Math.min(clip.right, viewport.right), bottom:Math.min(clip.bottom, viewport.bottom)};
-      visit(frame.documentElement, `${path}.0`, path, {inResources:false, offset:{x:left, y:top}, clip:frameClip, canvas:frameClip, propagated:frameCanvas?.element});
+      if (frame) {
+        visit(frame.documentElement, `${path}.0`, path, {inResources:false, offset:{x:left, y:top}, clip:frameClip, canvas:frameClip, propagated:frameCanvas?.element});
+        return;
+      }
+      // Another origin's document: only what shows, in the frame's own coordinates.
+      if (node.contentWindow && intersects(frameClip, frameClip)) {
+        pendingFrames.push({element:node, request:{path, offset:{x:left - rootRect.x, y:top - rootRect.y},
+          clip:{left:frameClip.left - left, top:frameClip.top - top, right:frameClip.right - left, bottom:frameClip.bottom - top}}});
+      }
       return;
     }
     if (frame) return;
@@ -946,8 +960,13 @@ export async function captureElement(root, options = {}) {
     else copy(target, `${path}.0`, path, useStyles, base);
   };
 
-  const rootCanvas = {left:-view.scrollX, top:-view.scrollY, right:Infinity, bottom:Infinity};
-  visit(root, "0", null, {inResources:false, offset:{x:0, y:0}, clip:rootCanvas, canvas:rootCanvas});
+  // A frame shows its viewport and only the part of it the page around it leaves visible.
+  const frameView = asFrame ? {left:Math.max(0, finite(options.frame.clip?.left, 0)), top:Math.max(0, finite(options.frame.clip?.top, 0)),
+    right:Math.min(view.innerWidth, finite(options.frame.clip?.right, view.innerWidth)), bottom:Math.min(view.innerHeight, finite(options.frame.clip?.bottom, view.innerHeight))} : null;
+  const rootCanvas = frameView || {left:-view.scrollX, top:-view.scrollY, right:Infinity, bottom:Infinity};
+  const frameCanvas = asFrame ? canvasBackground(root.ownerDocument) : null;
+  const pendingFrames = [];
+  visit(root, "0", null, {inResources:false, offset:{x:0, y:0}, clip:rootCanvas, canvas:rootCanvas, propagated:frameCanvas?.element});
   // A gradient, clip path or mask referenced from inside the selection may be defined outside it,
   // often in a sprite sheet at the top of the page; a mask's shapes can name gradients in turn.
   const pageUrl = root.ownerDocument.URL.replace(/#.*$/, "");
@@ -977,7 +996,7 @@ export async function captureElement(root, options = {}) {
     pending = nodes.slice(before);
   }
   const imageSizes = await measureBackgroundImages(nodes);
-  return {
+  const capture = {
     format: CAPTURE_FORMAT, version: CAPTURE_VERSION,
     label: options.label
       || nodes.find((node) => node.text)?.text?.slice(0, 96)
@@ -986,5 +1005,43 @@ export async function captureElement(root, options = {}) {
       || root.tagName.toLowerCase(),
     source: { url: options.url || globalThis.location?.href || null, selector: options.selector || null },
     capturedAt: options.capturedAt || new Date().toISOString(), rootPath: "0", nodes, imageSizes,
+    ...(frameCanvas?.color ? {canvasBackground:frameCanvas.color} : {}),
   };
+  // Another origin's frame is captured in its own document by whoever can reach it, and merged in;
+  // one nobody captures stays an empty frame, listed so a later step can fill it.
+  const unresolved = [];
+  for (const {element, request} of pendingFrames) {
+    let framed = null;
+    try { framed = options.captureFrame ? await options.captureFrame(element, request) : null; } catch {}
+    if (framed?.format === CAPTURE_FORMAT) mergeFrameCapture(capture, request, framed);
+    else unresolved.push(request);
+  }
+  if (unresolved.length) capture.frames = unresolved;
+  return capture;
+}
+
+const finite = (value, fallback) => Number.isFinite(value) ? value : fallback;
+
+/**
+ * Puts the capture of another origin's frame inside the capture holding its <iframe>: its nodes go
+ * under the iframe, moved from the frame's viewport to where the iframe shows it, and the frame's
+ * canvas color becomes the iframe's.
+ */
+export function mergeFrameCapture(capture, request, framed) {
+  const prefix = `${request.path}.0`;
+  const move = (path) => path === "0" ? prefix : `${prefix}${path.slice(1)}`;
+  const shift = (rect) => rect && {...rect, x:rect.x + request.offset.x, y:rect.y + request.offset.y};
+  const owner = capture.nodes.find((node) => node.path === request.path);
+  if (owner && framed.canvasBackground) owner.attributes.canvasBackground = framed.canvasBackground;
+  for (const node of framed.nodes) {
+    capture.nodes.push({
+      ...node, path:move(node.path), parentPath:node.parentPath == null ? request.path : move(node.parentPath),
+      rect:shift(node.rect), textRect:shift(node.textRect), textRuns:(node.textRuns || []).map((run) => ({...run, rect:shift(run.rect)})),
+    });
+  }
+  Object.assign(capture.imageSizes, framed.imageSizes);
+  if (framed.frames?.length) {
+    capture.frames = [...(capture.frames || []), ...framed.frames.map((frame) => ({...frame, path:move(frame.path), offset:{x:frame.offset.x + request.offset.x, y:frame.offset.y + request.offset.y}}))];
+  }
+  return capture;
 }

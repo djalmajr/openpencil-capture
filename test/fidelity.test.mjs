@@ -46,6 +46,9 @@ function cropImage(image, width, height, at) {
 
 const THRESHOLD = 0.015;
 
+// A frame served from another origin, which the page cannot read.
+const FRAME_FILES = {"https://frames.test/f.html":`<body style="margin:0;background:rgb(220, 240, 255)"><div style="margin:10px;width:60px;height:30px;background:rgb(200, 40, 40);border-radius:6px"></div><div style="position:absolute;left:90px;top:40px;width:80px;height:80px;background:linear-gradient(rgb(0, 160, 90), rgb(0, 60, 160))"></div></body>`};
+
 // A sprite sheet in its own file, with a style rule, presentation attributes, inline style and
 // currentColor, as icon sets ship them.
 const SPRITE_FILES = {"/icons.svg":`<svg xmlns="http://www.w3.org/2000/svg"><style>.accent{fill:rgb(240, 160, 0)}</style>`
@@ -79,6 +82,7 @@ describe("the pasted design looks like the page", () => {
     "a dashed SVG stroke": `<svg id="root" width="160" height="96" viewBox="0 0 80 48" style="display:block;background:rgb(255, 255, 255)"><path d="M4 24 H76" stroke="rgb(200, 30, 30)" stroke-width="4" stroke-dasharray="6 3"/></svg>`,
     "content inside an open shadow root and its slot": box("background:rgb(255, 255, 255)", `<x-card style="display:block;width:160px;height:96px"><span style="display:block;width:40px;height:40px;background:rgb(30, 160, 90)"></span></x-card>`),
     "a same-origin frame": box("background:rgb(255, 255, 255)", `<iframe srcdoc="<body style='margin:0;background:rgb(250, 240, 200)'><div style='margin:10px;width:60px;height:30px;background:rgb(200, 40, 40)'></div></body>" style="display:block;width:140px;height:76px;margin:6px;border:4px solid rgb(40, 40, 40)"></iframe>`),
+    "a frame from another origin": box("background:rgb(255, 255, 255)", `<iframe src="https://frames.test/f.html" style="display:block;width:140px;height:76px;margin:6px;border:4px solid rgb(40, 40, 40)"></iframe>`),
     "a sprite drawn through <use>": `<svg style="display:none"><symbol id="mark" viewBox="0 0 24 24"><path d="M2 2 H22 V12 H2 Z" fill="currentColor"/><circle cx="12" cy="18" r="4" fill="rgb(255, 160, 0)"/></symbol></svg>`
       + box("background:rgb(255, 255, 255);color:rgb(40, 90, 220)", `<svg width="96" height="96" style="display:block;margin-left:32px"><use href="#mark"/></svg>`),
     "a sprite drawn through <use> from another file": box("background:rgb(255, 255, 255);color:rgb(40, 90, 220)", `<svg width="96" height="96" style="display:block;margin-left:32px"><use href="/icons.svg#badge"/></svg><svg width="40" height="40" viewBox="0 0 20 20" style="position:absolute;left:4px;top:4px"><use href="icons.svg#plain"/></svg>`),
@@ -122,7 +126,7 @@ describe("the pasted design looks like the page", () => {
   };
   for (const [name, html] of Object.entries(cases)) {
     test(name, async () => {
-      const {difference} = await fidelity(html.includes("<x-card") ? `<script>customElements.define("x-card", class extends HTMLElement { constructor() { super(); this.attachShadow({mode:"open"}).innerHTML = '<div style="position:absolute;margin:20px 0 0 60px;width:80px;height:50px;background:rgb(240, 90, 30)"></div><div style="padding:8px"><slot></slot></div>'; } });</script>${html}` : html, name.startsWith("a scrolled") ? () => { document.querySelector("#root").scrollTop = 120; } : undefined, {crop:name.includes("overflows") ? "corner" : /dashed|dotted/.test(name) ? "center" : false, files:name.includes("another file") ? SPRITE_FILES : null});
+      const {difference} = await fidelity(html.includes("<x-card") ? `<script>customElements.define("x-card", class extends HTMLElement { constructor() { super(); this.attachShadow({mode:"open"}).innerHTML = '<div style="position:absolute;margin:20px 0 0 60px;width:80px;height:50px;background:rgb(240, 90, 30)"></div><div style="padding:8px"><slot></slot></div>'; } });</script>${html}` : html, name.startsWith("a scrolled") ? () => { document.querySelector("#root").scrollTop = 120; } : undefined, {crop:name.includes("overflows") ? "corner" : /dashed|dotted/.test(name) ? "center" : false, files:name.includes("another file") ? SPRITE_FILES : name.includes("another origin") ? FRAME_FILES : null});
       expect(difference).toBeLessThan(THRESHOLD);
     });
   }

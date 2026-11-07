@@ -318,9 +318,29 @@ describe("closed limitations, at the edges", () => {
     expect(leaked(capture, ["top-visible"])).toEqual(["top-visible"]);
   });
 
-  test("leaves a transformed frame of another origin empty", async () => {
-    const capture = await captureHtml(`<div id="root" style="width:200px;height:60px;overflow:hidden"><iframe src="https://frames.test/f.html" style="border:0;width:100px;height:60px;transform:scale(2);transform-origin:0 0"></iframe></div>`, "#root", {files:{"https://frames.test/f.html":`<body style="margin:0"><p style="margin:0">frame-text</p><p style="margin:45px 0 0">scaled-away-secret</p></body>`}});
-    expect(leaked(capture, ["frame-text", "scaled-away-secret"])).toEqual([]);
+  const frameFile = {"https://frames.test/f.html":`<body style="margin:0;font:14px Arial"><p style="margin:0">frame-text</p><p style="margin:45px 0 0 0">hidden-secret</p><p style="position:absolute;left:150px;top:0;margin:0">rs</p></body>`};
+  for (const [name, style] of [["scaled", "transform:scale(2);transform-origin:0 0"], ["turned half a turn", "transform:rotate(180deg)"], ["mirrored", "scale:-1 1"], ["inside a turned box", ""]]) {
+    test(`leaves a frame of another origin ${name} empty`, async () => {
+      const iframe = `<iframe src="https://frames.test/f.html" style="border:0;width:200px;height:60px;display:block;${style}"></iframe>`;
+      const capture = await captureHtml(`<div id="root" style="width:100px;height:30px;overflow:hidden">${name.startsWith("inside") ? `<div style="rotate:180deg">${iframe}</div>` : iframe}</div>`, "#root", {files:frameFile});
+      expect(leaked(capture, ["frame-text", "hidden-secret", "\"rs\""])).toEqual([]);
+    });
+  }
+
+  test("still captures a frame of another origin that a translation alone moves", async () => {
+    const capture = await captureHtml(`<div id="root" style="position:relative;width:240px;height:80px;overflow:hidden"><div style="position:absolute;left:50%;transform:translateX(-50%);translate:4px 0"><iframe src="https://frames.test/f.html" style="border:0;width:200px;height:30px;display:block"></iframe></div></div>`, "#root", {files:frameFile});
+    expect(leaked(capture, ["frame-text", "hidden-secret"])).toEqual(["frame-text"]);
+  });
+
+  test("cuts a frame's document with the frame's own clip-path inset, calc() included", async () => {
+    const capture = await captureHtml(`<div id="root"><iframe src="https://frames.test/f.html" style="border:0;width:200px;height:120px;display:block;clip-path:inset(0 calc(50% - 10px) 0 0)"></iframe></div>`, "#root", {files:frameFile});
+    expect(capture.nodes.find((node) => node.tag === "iframe").styles.clipPath).toContain("calc(");
+    expect(leaked(capture, ["frame-text", "hidden-secret", "\"rs\""])).toEqual(["frame-text", "hidden-secret"]);
+  });
+
+  test("cuts fixed descendants and content-box insets too", async () => {
+    const capture = await captureHtml(`<div id="root" style="clip-path:inset(0 0 0 0 round 4px) content-box;padding:0 0 0 60px;width:200px;height:40px;font:14px Arial"><span style="position:fixed;left:0;top:0">fixed-secret</span><span style="margin-left:4px">kept</span></div>`);
+    expect(leaked(capture, ["fixed-secret", "kept"])).toEqual(["kept"]);
   });
 });
 
@@ -333,7 +353,7 @@ describe("a <use> that references another file", () => {
 
   test("fetches no file for a hidden <use>, and uses none that is not SVG", async () => {
     const requests = [];
-    const capture = await captureHtml(`<div id="root"><svg width="20" height="20" style="display:none"><use href="/hidden.svg#dot"/></svg><svg width="20" height="20"><use href="/s.txt#dot"/></svg></div>`, "#root", {files:{"/hidden.svg":sprite, "/s.txt":sprite}, requests});
+    const capture = await captureHtml(`<div id="root"><svg width="20" height="20" style="display:none"><use href="/hidden.svg#dot"/></svg><svg width="20" height="20" style="visibility:hidden"><use href="/hidden.svg#dot"/></svg><svg width="20" height="20"><use href="/s.txt#dot"/></svg></div>`, "#root", {files:{"/hidden.svg":sprite, "/s.txt":sprite}, requests});
     expect(requests.filter((url) => url.endsWith("hidden.svg"))).toEqual([]);
     expect(capture.nodes.some((node) => node.tag === "circle")).toBe(false);
   });

@@ -251,20 +251,44 @@ function intersects(box, clip) {
     && Math.min(box.bottom, clip.bottom) - Math.max(box.top, clip.top) > 1;
 }
 
-// `clip-path:inset()` cuts the element and everything in it to a rectangle (rounding aside), so
-// nothing outside it is read. Other shapes are masked in the design instead.
+// `clip-path:inset()` cuts the element and everything in it, fixed descendants included, to a
+// rectangle (rounding aside), so nothing outside it is read. Other shapes are masked in the
+// design instead. A length this cannot work out cuts everything: better nothing than too much.
 function insetClip(computed, box, clip) {
-  const match = String(computed.clipPath || "").match(/^inset\(([^)]*)\)/i);
+  const match = String(computed.clipPath || "").match(/^inset\(((?:[^()]|\([^()]*\))*)\)\s*([a-z-]*)/i);
   if (!match) return clip;
-  const words = match[1].split(/\s+round\s+/i)[0].trim().split(/\s+/);
+  const border = ["Top", "Right", "Bottom", "Left"].map((side) => Number.parseFloat(computed[`border${side}Width`]) || 0);
+  const padding = ["Top", "Right", "Bottom", "Left"].map((side) => Number.parseFloat(computed[`padding${side}`]) || 0);
+  const inner = match[2] === "content-box" ? border.map((value, index) => value + padding[index]) : match[2] === "padding-box" ? border : [0, 0, 0, 0];
+  const area = {left:box.left + inner[3], top:box.top + inner[0], right:box.right - inner[1], bottom:box.bottom - inner[2]};
+  const words = match[1].split(/\s+round\s+/i)[0].trim().match(/calc\([^)]*\)|\S+/g) || [];
   const [top = "0px", right = top, bottom = top, left = right] = words;
-  const width = box.right - box.left;
-  const height = box.bottom - box.top;
-  const length = (value, range) => value.endsWith("%") ? Number.parseFloat(value) / 100 * range : Number.parseFloat(value) || 0;
-  return {
-    left:Math.max(clip.left, box.left + length(left, width)), top:Math.max(clip.top, box.top + length(top, height)),
-    right:Math.min(clip.right, box.right - length(right, width)), bottom:Math.min(clip.bottom, box.bottom - length(bottom, height)),
+  const length = (value, range) => {
+    const calc = value.match(/^calc\((.*)\)$/i);
+    const terms = calc ? Array.from(calc[1].matchAll(/([+-]?)\s*([\d.]+)(%|px)/g)) : [[value, "", ...(value.match(/^(-?[\d.]+)(%|px)?$/)?.slice(1) || [])]];
+    if (!terms.length || terms.some((term) => term[2] === undefined) || (calc && calc[1].replace(/([+-]?)\s*([\d.]+)(%|px)/g, "").replace(/[\s+-]/g, ""))) return Infinity;
+    return terms.reduce((total, [, sign, number, unit]) => total + (sign === "-" ? -1 : 1) * (unit === "%" ? Number(number) / 100 * range : Number(number)), 0);
   };
+  const width = area.right - area.left;
+  const height = area.bottom - area.top;
+  return {
+    left:Math.max(clip.left, area.left + length(left, width)), top:Math.max(clip.top, area.top + length(top, height)),
+    right:Math.min(clip.right, area.right - length(right, width)), bottom:Math.min(clip.bottom, area.bottom - length(bottom, height)),
+  };
+}
+
+// Whether a transform scales, turns, mirrors or skews the element or anything around it, up
+// through the frames that hold it: then its box no longer maps to the screen by a shift, and a
+// frame inside it cannot be clipped to what shows. A translation alone is a shift the boxes
+// already include.
+function isTransformed(element) {
+  for (let current = element; current;) {
+    const style = current.ownerDocument.defaultView.getComputedStyle(current);
+    const shiftOnly = style.transform === "none" || /^matrix\(1, 0, 0, 1, [^,]+, [^,)]+\)$/.test(style.transform);
+    if (!shiftOnly || (style.rotate && style.rotate !== "none") || (style.scale && style.scale !== "none") || /^\S+ \S+ (?!0px)\S+$/.test(style.translate || "")) return true;
+    current = current.assignedSlot || current.parentElement || current.getRootNode().host || current.ownerDocument.defaultView.frameElement || null;
+  }
+  return false;
 }
 
 // Descendants are clipped to the padding box of an ancestor whose overflow is not visible.
@@ -362,7 +386,7 @@ async function loadUseFiles(root, shadowRootOf) {
   const collect = (scope) => {
     for (const element of scope.querySelectorAll("*")) {
       // Only a <use> the page draws: a hidden one's file never shows.
-      if (element.localName === "use" && element.namespaceURI === SVG_NAMESPACE && isRendered(element)) uses.push(element);
+      if (element.localName === "use" && element.namespaceURI === SVG_NAMESPACE && isRendered(element) && styleOf(element).visibility === "visible") uses.push(element);
       const shadow = shadowRootOf(element);
       if (shadow) collect(shadow);
     }
@@ -818,22 +842,24 @@ export async function captureElement(root, options = {}) {
       const left = box.left + node.clientLeft + Number.parseFloat(computed.paddingLeft || 0);
       const top = box.top + node.clientTop + Number.parseFloat(computed.paddingTop || 0);
       const viewport = {left, top, right:left + node.clientWidth - Number.parseFloat(computed.paddingLeft || 0) - Number.parseFloat(computed.paddingRight || 0), bottom:top + node.clientHeight - Number.parseFloat(computed.paddingTop || 0) - Number.parseFloat(computed.paddingBottom || 0)};
-      const frameClip = {left:Math.max(clip.left, viewport.left), top:Math.max(clip.top, viewport.top), right:Math.min(clip.right, viewport.right), bottom:Math.min(clip.bottom, viewport.bottom)};
-      if (frame) {
+      // The frame's own clip-path inset cuts its document too.
+      const cut = insetClip(computed, box, clip);
+      const frameClip = {left:Math.max(cut.left, viewport.left), top:Math.max(cut.top, viewport.top), right:Math.min(cut.right, viewport.right), bottom:Math.min(cut.bottom, viewport.bottom)};
+      // A transformed frame maps its viewport otherwise than by a shift, so it stays empty.
+      const transformed = isTransformed(node);
+      if (frame && !transformed) {
         visit(frame.documentElement, `${path}.0`, path, {inResources:false, offset:{x:left, y:top}, clip:frameClip, canvas:frameClip, propagated:frameCanvas?.element});
         return;
       }
-      // Another origin's document: only what shows, in the frame's own coordinates. A frame scaled
-      // or turned by a transform maps its viewport otherwise, so it stays empty.
-      const untransformed = Math.abs(raw.width - node.offsetWidth) <= 0.5 && Math.abs(raw.height - node.offsetHeight) <= 0.5;
-      if (node.contentWindow && untransformed && intersects(frameClip, frameClip)) {
+      // Another origin's document: only what shows, in the frame's own coordinates.
+      if (!frame && node.contentWindow && !transformed && intersects(frameClip, frameClip)) {
         pendingFrames.push({element:node, request:{path, offset:{x:left - rootRect.x, y:top - rootRect.y},
           clip:{left:frameClip.left - left, top:frameClip.top - top, right:frameClip.right - left, bottom:frameClip.bottom - top}}});
       }
       return;
     }
     if (frame) return;
-    const childContext = {...context, inResources, clip:ownClip};
+    const childContext = {...context, inResources, clip:ownClip, canvas:insetClip(computed, box, context.canvas)};
     // Pseudo-elements are part of the content `content-visibility:hidden` skips; replaced elements
     // such as <img> and <input> draw none.
     // Chromium draws them on the inputs it renders as widgets, whatever their `appearance`, and on

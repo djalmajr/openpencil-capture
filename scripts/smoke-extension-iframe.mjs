@@ -133,6 +133,14 @@ try {
   }
   const outline = (node, depth = 0) => [`${" ".repeat(depth)}${node.type} ${node.name} ${node.text ?? ""}`, ...(node.children || []).flatMap((child) => outline(child, depth + 1))];
   if (!clipboard.closedShadow) throw new Error(`The capture left out a closed shadow root:\n${payload.nodes.flatMap((node) => outline(node)).join("\n")}`);
+  // Esc in a frame closes the picker in every frame, and the button opens them again.
+  await clickToolbarButton();
+  await page.mouse.move(bounds.x + 10, bounds.y + bounds.height - 10);
+  await page.keyboard.press("Escape");
+  await page.waitForTimeout(300);
+  const escaped = await pickerViews();
+  if (escaped.some((view) => view !== "closed")) throw new Error(`Esc left pickers open: ${JSON.stringify(escaped)}`);
+
   // Clicking the button while one frame shows its success message starts over in every frame.
   await clickToolbarButton();
   const reopened = await pickerViews();
@@ -149,7 +157,7 @@ try {
   await clickToolbarButton();
   const closed = await pickerViews();
   if (closed.some((view) => view !== "closed")) throw new Error(`The button left pickers open: ${JSON.stringify(closed)}`);
-  console.log(JSON.stringify({loadedExtension:true, crossOrigin:true, clipboard, reopened, closed}));
+  console.log(JSON.stringify({loadedExtension:true, crossOrigin:true, clipboard, escaped, reopened, closed}));
 } finally {
   await context?.close();
   topServer.stop(true);

@@ -401,6 +401,8 @@ describe("convertCaptureToTree", () => {
       {path:"0",parentPath:null,tag:"input",name:"root",text:null,rect:{x:0,y:0,width:200,height:36},attributes:{type:"password",value:"old-secret"},styles:{...rootStyles,color:"rgb(0, 0, 0)",fontSize:"14px",lineHeight:"20px"}},
     ]};
     expect(JSON.stringify(convertCaptureToTree(capture))).not.toContain("old-secret");
+    capture.nodes[0].attributes.type = "PASSWORD";
+    expect(JSON.stringify(convertCaptureToTree(capture))).not.toContain("old-secret");
   });
 
   // Regression: a hidden root crashed with "Cannot set properties of null".

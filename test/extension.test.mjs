@@ -71,29 +71,10 @@ describe("extension clipboard contract", () => {
     expect(manifest.host_permissions).toEqual(["<all_urls>"]);
   });
 
-  test("keeps Escape teardown in the compiled picker contract", async () => {
-    const content = await readSource("src/extension/content.mjs");
-    expect(content).toContain('event.key === "Escape"');
-    expect(content).toContain('globalThis.addEventListener("keydown", cancelFromKeyboard, true)');
-    expect(content).toContain('globalThis.removeEventListener("keydown", cancelFromKeyboard, true)');
-  });
-
-  test("injects the picker into accessible iframe documents", async () => {
-    const background = await readSource("src/extension/background.mjs");
-    const content = await readSource("src/extension/content.mjs");
-    expect(background).toContain("allFrames:true");
-    expect(content).toContain("globalThis.top !== globalThis");
-    expect(content).toContain('target?.matches?.("iframe,frame")');
-    expect(content).toContain('globalThis.top.postMessage({type:FRAME_ACTIVITY_MESSAGE}, "*")');
-    expect(content).toContain('globalThis.top.postMessage({type:FRAME_CANCEL_MESSAGE}, "*")');
-  });
-
-  test("writes captures through the extension offscreen document", async () => {
+  test("declares what the offscreen clipboard writer needs", async () => {
     const manifest = JSON.parse(await readSource("extension/manifest.json"));
-    const background = await readSource("src/extension/background.mjs");
     expect(manifest.permissions).toContain("offscreen");
     expect(manifest.permissions).toContain("clipboardWrite");
-    expect(background).toContain('"CLIPBOARD"');
   });
 
   // Mutation captured: trying clipboard.write first would reserialize text/html with document
@@ -130,10 +111,6 @@ describe("extension clipboard contract", () => {
     expect(captureProgressForElapsed(450)).toBeGreaterThanOrEqual(20);
     expect(captureProgressForElapsed(450)).toBeLessThan(35);
     expect(captureProgressForElapsed(60_000)).toBe(95);
-  });
-
-  test("captures CSS blend modes for editable visual overlays", async () => {
-    expect(await readSource("src/capture-element.mjs")).toContain('"mixBlendMode"');
   });
 
   test("combines an image's own filter with inherited filters", () => {

@@ -12,7 +12,13 @@ const childServer = Bun.serve({
       <article id="payout" style="width:420px;padding:24px;border:1px solid #d6d3d1;border-radius:12px">
         <h2 style="margin:0 0 8px">Payout Threshold</h2>
         <p style="margin:0">Set the minimum balance required before a payout is triggered.</p>
+        <closed-note></closed-note>
       </article>
+      <script>
+        customElements.define("closed-note", class extends HTMLElement {
+          constructor() { super(); this.attachShadow({mode:"closed"}).innerHTML = "<p style='margin:8px 0 0'>Inside a closed shadow root</p>"; }
+        });
+      </script>
     </body></html>`, {headers:{"content-type":"text/html"}});
   },
 });
@@ -98,8 +104,10 @@ try {
 
   const target = frame.locator("#payout");
   await frame.locator("#__openpencil_capture_host__").waitFor({state:"attached"});
-  await target.hover({position:{x:40, y:40}});
-  await target.click({position:{x:40, y:40}});
+  // The card's own padding, below the toolbar, so the whole card is the selection.
+  const bounds = await target.boundingBox();
+  await page.mouse.move(bounds.x + 10, bounds.y + bounds.height - 10);
+  await page.mouse.click(bounds.x + 10, bounds.y + bounds.height - 10);
   try {
     await frame.waitForFunction(() => {
       const host = document.getElementById("__openpencil_capture_host__");
@@ -116,10 +124,15 @@ try {
 
   const plain = await page.evaluate(() => navigator.clipboard.readText());
   const payload = parseOpenPencilClipboard(plain);
-  const clipboard = {marker:Boolean(payload), name:payload?.nodes[0]?.name};
+  const texts = [];
+  const collect = (node) => { if (node.type === "TEXT") texts.push(node.text); node.children?.forEach(collect); };
+  payload?.nodes.forEach(collect);
+  const clipboard = {marker:Boolean(payload), name:payload?.nodes[0]?.name, closedShadow:texts.includes("Inside a closed shadow root")};
   if (!clipboard.marker || !clipboard.name?.includes("Payout Threshold")) {
     throw new Error(`Loaded extension did not copy the iframe selection: ${JSON.stringify(clipboard)}`);
   }
+  const outline = (node, depth = 0) => [`${" ".repeat(depth)}${node.type} ${node.name} ${node.text ?? ""}`, ...(node.children || []).flatMap((child) => outline(child, depth + 1))];
+  if (!clipboard.closedShadow) throw new Error(`The capture left out a closed shadow root:\n${payload.nodes.flatMap((node) => outline(node)).join("\n")}`);
   // Clicking the button while one frame shows its success message starts over in every frame.
   await clickToolbarButton();
   const reopened = await pickerViews();

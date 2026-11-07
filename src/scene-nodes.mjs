@@ -208,6 +208,16 @@ function vectorPlacement(node, hasFill) {
     {includeOpenRegions:hasFill},
   );
   if (network.vertices.length === 0) return null;
+  // A transform maps the path's own coordinates into the viewBox; tangents take its linear part.
+  if (node.transform) {
+    const [a, b, c, d, e, f] = node.transform;
+    for (const vertex of network.vertices) {
+      [vertex.x, vertex.y] = [a * vertex.x + c * vertex.y + e, b * vertex.x + d * vertex.y + f];
+    }
+    for (const segment of network.segments) {
+      for (const tangent of [segment.tangentStart, segment.tangentEnd]) [tangent.x, tangent.y] = [a * tangent.x + c * tangent.y, b * tangent.x + d * tangent.y];
+    }
+  }
   const [viewX = 0, viewY = 0, viewWidth = node.width, viewHeight = node.height] = node.viewBox || [];
   const uniform = viewWidth > 0 && viewHeight > 0 ? Math.min(node.width / viewWidth, node.height / viewHeight) : 1;
   const scaleX = node.stretchViewBox ? node.width / viewWidth : uniform;

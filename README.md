@@ -41,7 +41,11 @@ During serialization the toolbar collapses to `Capturing selection…` or `Captu
 | Text | `TEXT`, one layer per visual line, with visible truncation kept as `...`, preformatted spaces, and the font family the browser drew with |
 | `<a href>` | Text hyperlink to the absolute target, for `http(s)`, `mailto` and `tel` |
 | `path`, `line`, `polyline`, `polygon`, partial circle | `VECTOR` with an editable vector network |
-| `rect`, `circle`, `ellipse` | `RECTANGLE`, `ELLIPSE` |
+| `rect`, `circle`, `ellipse` | `RECTANGLE`, `ELLIPSE`; a turned one becomes a `VECTOR` |
+| SVG `transform` | Applied to the vector network |
+| `<use>` of a `<symbol>` or graphic in the page | The referenced graphics, with the styles and `currentColor` they inherit from the `<use>` |
+| Shadow roots, open and (in the extension) closed, and slots | Their rendered content, in place |
+| Same-origin `<iframe>` | Its document, clipped to the frame, over the canvas background |
 | Color, including `oklch`, `oklab`, `lab`, `lch` and `color()` spaces | Solid fill |
 | CSS linear, radial and conic gradient, SVG linear gradient | Native linear, radial or angular gradient |
 | Layered `background` | One fill per layer over the background color; a layer that paints only part of the box, and every layer above it, becomes a rectangle of its own |
@@ -68,10 +72,9 @@ Values the page masks paste as bullets, both `type=password` fields and anything
 Limits of the capture model:
 
 - Layout is absolute; Auto Layout is not inferred.
-- Pseudo-elements, masks and `transform` on SVG elements are not captured.
+- Pseudo-elements and masks are not captured.
 - Filters other than `grayscale()` and `brightness()` are dropped.
-- A diagonal SVG `<line>` is always drawn from top-left to bottom-right.
-- Open shadow roots, SVG `<use>` sprites and iframe content in a whole-page capture come out empty.
+- A cross-origin iframe comes out empty when the page around it is captured; capture inside the frame to get its content. So does a `<use>` that references another file.
 - Gradients blend in sRGB whatever `in <space>` says, and color hints are ignored. `background-repeat:space` repeats without spacing.
 - An elliptical corner (`border-radius:50%` on a box that is not square, `10px 20px`) becomes circular, with the smaller radius.
 - A dashed or dotted border keeps Chromium's dash lengths, but the editor starts the dashes at a corner rather than centering them on each side, and draws dots square.

@@ -143,3 +143,19 @@ describe("text", () => {
     expect(convertCaptureToTree(capture).root.children[0].href).toBeUndefined();
   });
 });
+
+describe("documents inside the page", () => {
+  test("leaves a cross-origin frame empty without failing the capture", async () => {
+    const capture = await captureHtml(`<div id="root"><iframe src="data:text/html,<p>elsewhere</p>" style="width:100px;height:50px"></iframe></div>`);
+    expect(capture.nodes.map((node) => node.tag)).toEqual(["div", "iframe"]);
+  });
+
+  test("reads an open shadow root and what its slot shows, not the light DOM it replaces", async () => {
+    const capture = await captureHtml(`<div id="root"><x-tag>slotted</x-tag></div>`, "#root", {before:() => {
+      customElements.define("x-tag", class extends HTMLElement {
+        constructor() { super(); this.attachShadow({mode:"open"}).innerHTML = "<b>shadow</b> <slot></slot>"; }
+      });
+    }});
+    expect(capture.nodes.filter((node) => node.text).map((node) => [node.tag, node.text])).toEqual([["b", "shadow"], ["slot", "slotted"]]);
+  });
+});

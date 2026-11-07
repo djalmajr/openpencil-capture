@@ -413,10 +413,49 @@ function filteredImageNode(node, parent, url) {
     ...(backgroundColor ? {fill:backgroundColor} : {}),metadata:{type:filter && filter !== "none" ? "openpencil-capture-image-filter" : "openpencil-capture-image",filter},children};
 }
 
+// A primitive as path data in its own user space; percentages resolve against the viewBox.
+function primitivePath(node, viewBox) {
+  const [, , viewWidth = 0, viewHeight = 0] = viewBox;
+  const length = (name, range, fallback = 0) => resolveLength(node.attributes[name], range) ?? fallback;
+  const diagonal = Math.hypot(viewWidth, viewHeight) / Math.SQRT2;
+  const ellipse = (cx, cy, rx, ry) => rx > 0 && ry > 0
+    ? `M ${cx - rx} ${cy} A ${rx} ${ry} 0 1 0 ${cx + rx} ${cy} A ${rx} ${ry} 0 1 0 ${cx - rx} ${cy} Z`
+    : null;
+  if (node.tag === "rect") {
+    const x = length("x", viewWidth); const y = length("y", viewHeight);
+    const width = length("width", viewWidth); const height = length("height", viewHeight);
+    if (!(width > 0 && height > 0)) return null;
+    let rx = resolveLength(node.attributes.rx, viewWidth) ?? resolveLength(node.attributes.ry, viewHeight) ?? 0;
+    let ry = resolveLength(node.attributes.ry, viewHeight) ?? rx;
+    rx = Math.min(rx, width / 2); ry = Math.min(ry, height / 2);
+    if (!(rx > 0 && ry > 0)) return `M ${x} ${y} H ${x + width} V ${y + height} H ${x} Z`;
+    return `M ${x + rx} ${y} H ${x + width - rx} A ${rx} ${ry} 0 0 1 ${x + width} ${y + ry} V ${y + height - ry} A ${rx} ${ry} 0 0 1 ${x + width - rx} ${y + height} H ${x + rx} A ${rx} ${ry} 0 0 1 ${x} ${y + height - ry} V ${y + ry} A ${rx} ${ry} 0 0 1 ${x + rx} ${y} Z`;
+  }
+  if (node.tag === "circle") {
+    const radius = length("r", diagonal);
+    return ellipse(length("cx", viewWidth), length("cy", viewHeight), radius, radius);
+  }
+  if (node.tag === "ellipse") return ellipse(length("cx", viewWidth), length("cy", viewHeight), length("rx", viewWidth), length("ry", viewHeight));
+  if (node.tag === "line") return `M ${length("x1", viewWidth)} ${length("y1", viewHeight)} L ${length("x2", viewWidth)} ${length("y2", viewHeight)}`;
+  if (node.tag === "polyline" || node.tag === "polygon") {
+    const numbers = node.attributes.points?.trim().split(/[\s,]+/).map(Number);
+    if (!numbers?.length || numbers.length % 2 || numbers.some((value) => !Number.isFinite(value))) return null;
+    const commands = [];
+    for (let index = 0; index < numbers.length; index += 2) commands.push(`${index ? "L" : "M"} ${numbers[index]} ${numbers[index + 1]}`);
+    return `${commands.join(" ")}${node.tag === "polygon" ? " Z" : ""}`;
+  }
+  if (node.tag === "path") return node.attributes.d || null;
+  return null;
+}
+
+const hasRotation = (matrix) => Boolean(matrix) && (Math.abs(matrix[1]) > 1e-6 || Math.abs(matrix[2]) > 1e-6);
+
 function svgGraphic(node, parent, byPath, paintServers) {
   let svg = node;
   while (svg && svg.tag !== "svg") svg = byPath.get(svg.parentPath);
   const viewBox = (svg?.attributes.viewBox || `0 0 ${svg?.rect.width || node.rect.width} ${svg?.rect.height || node.rect.height}`).split(/[\s,]+/).map(Number);
+  const transform = node.attributes.transformMatrix || null;
+  const transformScale = transform ? Math.sqrt(Math.abs(transform[0] * transform[3] - transform[1] * transform[2])) : 1;
   const strokeScale = svg && viewBox[2] > 0 && viewBox[3] > 0
     ? Math.min(svg.rect.width / viewBox[2], svg.rect.height / viewBox[3])
     : 1;
@@ -426,8 +465,21 @@ function svgGraphic(node, parent, byPath, paintServers) {
   const primitiveRect = svg ? {
     x:round(node.rect.x - svg.rect.x), y:round(node.rect.y - svg.rect.y), width:round(node.rect.width), height:round(node.rect.height),
   } : relativeRect(node, parent);
-  const base = { name:semanticLayerName(node), layoutPosition:"absolute", ...(node.tag === "path" ? svgRelativeRect : primitiveRect), ...graphicPaint(node, strokeScale, paintServers) };
-  if (node.tag === "rect") return { type:"rectangle", ...base, cornerRadius:round(px(node.attributes.rx || node.attributes.ry)) };
+  // Lines, polylines and polygons are drawn in the SVG's own coordinates, and so is a primitive
+  // that is turned, or copied by a <use> (its box is the <use>'s, not its own).
+  const asPath = ["path", "line", "polyline", "polygon"].includes(node.tag) || node.synthetic === "use" || hasRotation(transform);
+  const paint = graphicPaint(node, strokeScale * (asPath ? transformScale : 1), paintServers);
+  const base = { name:semanticLayerName(node), layoutPosition:"absolute", ...(asPath ? svgRelativeRect : primitiveRect), ...paint };
+  if (asPath) {
+    const geometry = primitivePath(node, viewBox);
+    if (!geometry) return null;
+    return {
+      type:"path", ...base, geometry, viewBox,
+      ...(transform ? {transform} : {}),
+      ...(svg?.attributes.preserveAspectRatio === "none" ? {stretchViewBox:true} : {}),
+    };
+  }
+  if (node.tag === "rect") return { type:"rectangle", ...base, cornerRadius:round(px(node.attributes.rx || node.attributes.ry) * strokeScale * transformScale) };
   if (node.tag === "circle" || node.tag === "ellipse") {
     // A progress ring draws one dash and a gap as long as the circle; other dash arrays are dashes.
     const dash = String(node.styles.strokeDasharray || "").match(/^([\d.]+)px[, ]+([\d.]+)px$/);
@@ -456,24 +508,43 @@ function svgGraphic(node, parent, byPath, paintServers) {
     }
     return { type:"ellipse", ...base };
   }
-  if (node.tag === "line") {
-    const width = Math.max(1, base.width);
-    const height = Math.max(1, base.height);
-    return { type:"path", ...base, width, height, geometry:`M 0 0 L ${base.width === 0 ? 0 : width} ${base.height === 0 ? 0 : height}`, viewBox:[0, 0, width, height] };
-  }
-  if (node.tag === "polyline" || node.tag === "polygon") {
-    const numbers = node.attributes.points?.trim().split(/[\s,]+/).map(Number);
-    if (!numbers?.length || numbers.some((value) => !Number.isFinite(value))) return null;
-    const points = [];
-    for (let index = 0; index < numbers.length; index += 2) points.push([numbers[index], numbers[index + 1]]);
-    const xs = points.map(([x]) => x); const ys = points.map(([, y]) => y);
-    const commands = points.map(([x, y], index) => `${index ? "L" : "M"} ${x} ${y}`).join(" ");
-    return { type:"path", ...base, geometry:`${commands}${node.tag === "polygon" ? " Z" : ""}`, viewBox:[Math.min(...xs), Math.min(...ys), Math.max(1, Math.max(...xs) - Math.min(...xs)), Math.max(1, Math.max(...ys) - Math.min(...ys))] };
-  }
-  if (node.tag === "path" && node.attributes.d) {
-    return { type:"path", ...base, geometry:node.attributes.d, viewBox, ...(svg?.attributes.preserveAspectRatio === "none" ? {stretchViewBox:true} : {}) };
-  }
   return null;
+}
+
+// A paint server's stops, with each stop's opacity folded into its color.
+function paintServerStops(node, childPaths, byPath) {
+  return (childPaths.get(node.path) || []).map((path) => byPath.get(path)).filter((child) => child?.tag === "stop").flatMap((stop) => {
+    const color = safeColor(stop.styles.stopColor || stop.attributes["stop-color"]);
+    if (!color) return [];
+    const rawOffset = stop.attributes.offset || "0";
+    const position = rawOffset.endsWith("%") ? px(rawOffset) / 100 : px(rawOffset);
+    return [{color:colorWithCombinedOpacity(color,stop.styles.stopOpacity || stop.attributes["stop-opacity"]),position:clamp(position)}];
+  });
+}
+
+// SVG gradients, by id, in fractions of the painted shape's box (objectBoundingBox, the default).
+function svgPaintServers(capture, childPaths, byPath) {
+  const servers = new Map();
+  const fraction = (value, fallback) => {
+    if (value == null || value === "") return fallback;
+    return String(value).endsWith("%") ? px(value) / 100 : px(value, fallback);
+  };
+  for (const node of capture.nodes) {
+    if (node.namespace !== "http://www.w3.org/2000/svg" || !node.attributes.id) continue;
+    if (node.tag !== "lineargradient" && node.tag !== "radialgradient") continue;
+    const stops = paintServerStops(node, childPaths, byPath);
+    if (stops.length < 2) continue;
+    if (node.tag === "radialgradient") {
+      const radius = fraction(node.attributes.r, 0.5);
+      servers.set(node.attributes.id, {type:"gradient", gradientType:"radial", center:{x:fraction(node.attributes.cx, 0.5), y:fraction(node.attributes.cy, 0.5)}, radius:{x:radius, y:radius}, colors:stops});
+      continue;
+    }
+    const x1 = fraction(node.attributes.x1, 0); const y1 = fraction(node.attributes.y1, 0);
+    const x2 = fraction(node.attributes.x2, 1); const y2 = fraction(node.attributes.y2, 0);
+    const rotation = ((Math.atan2(-(x2-x1),-(y2-y1))*180/Math.PI)%360+360)%360;
+    servers.set(node.attributes.id, {type:"gradient", gradientType:"linear", rotation:round(rotation), colors:stops});
+  }
+  return servers;
 }
 
 export function convertCaptureToTree(capture) {
@@ -486,22 +557,7 @@ export function convertCaptureToTree(capture) {
     if (!childPaths.has(node.parentPath)) childPaths.set(node.parentPath, []);
     childPaths.get(node.parentPath).push(node.path);
   }
-  const paintServers = new Map();
-  for (const node of capture.nodes) {
-    if (node.namespace !== "http://www.w3.org/2000/svg" || node.tag !== "lineargradient" || !node.attributes.id) continue;
-    const stops = (childPaths.get(node.path) || []).map((path) => byPath.get(path)).filter((child) => child?.tag === "stop").flatMap((stop) => {
-      const color = safeColor(stop.styles.stopColor || stop.attributes["stop-color"]);
-      if (!color) return [];
-      const rawOffset = stop.attributes.offset || "0";
-      const position = rawOffset.endsWith("%") ? px(rawOffset) / 100 : px(rawOffset);
-      return [{color:colorWithCombinedOpacity(color,stop.styles.stopOpacity || stop.attributes["stop-opacity"]),position:clamp(position)}];
-    });
-    if (stops.length < 2) continue;
-    const x1 = px(node.attributes.x1,0); const y1 = px(node.attributes.y1,0);
-    const x2 = px(node.attributes.x2,0); const y2 = px(node.attributes.y2,1);
-    const rotation = ((Math.atan2(-(x2-x1),-(y2-y1))*180/Math.PI)%360+360)%360;
-    paintServers.set(node.attributes.id,{type:"gradient",gradientType:"linear",rotation:round(rotation),colors:stops});
-  }
+  const paintServers = svgPaintServers(capture, childPaths, byPath);
   const stats = { frames:0, groups:0, texts:0, images:0, gradients:0, svgGraphics:0, controls:0, skipped:0, skippedSvgInvisible:0, skippedSvgUnsupported:0, skippedRoots:{} };
   const convertNode = (node, parent, clippedBackground = null) => {
     if (node.namespace === "http://www.w3.org/2000/svg" && ["defs", "clippath", "title", "desc"].includes(node.tag)) {
@@ -556,9 +612,11 @@ export function convertCaptureToTree(capture) {
       if (node.tag === "img") return filteredImageNode(node,parent,url);
       return {type:"rectangle",name:semanticLayerName(node),layoutPosition:"absolute",...relativeRect(node,parent),fill:{type:"image",url,mode:"stretch"},cornerRadius:cornerRadius(node)};
     }
-    const backgroundColor = safeColor(node.styles.backgroundColor);
+    // A frame shows its document's canvas background, which the element it came from no longer paints.
+    const propagated = node.attributes.backgroundPropagated;
+    const backgroundColor = propagated ? null : safeColor(node.attributes.canvasBackground || node.styles.backgroundColor);
     const blendMode = cssBlendMode(node.styles.mixBlendMode);
-    const layers = backgroundLayers(node, capture);
+    const layers = propagated ? [] : backgroundLayers(node, capture);
     // A single striped gradient stays editable as stripes rather than a many-stop gradient.
     const repeatingPattern = layers.length === 1 && !layers[0].region ? repeatingLinearPattern(node) : null;
     const withBlend = (fill) => blendMode ? (typeof fill === "string" ? {type:"color",color:fill,blendMode} : {...fill,blendMode}) : fill;
@@ -584,7 +642,7 @@ export function convertCaptureToTree(capture) {
       if (svg) frameRect = {x:round(node.rect.x-svg.rect.x),y:round(node.rect.y-svg.rect.y),width:round(node.rect.width),height:round(node.rect.height)};
     }
     // Scrolled content is clipped like hidden content; the capture keeps the scroll position.
-    const clipped = [node.styles.overflowX, node.styles.overflowY, ...String(node.styles.overflow || "").split(/\s+/)].some((value) => ["hidden", "clip", "auto", "scroll"].includes(value));
+    const clipped = node.tag === "iframe" || node.tag === "frame" || [node.styles.overflowX, node.styles.overflowY, ...String(node.styles.overflow || "").split(/\s+/)].some((value) => ["hidden", "clip", "auto", "scroll"].includes(value));
     const isHtmlElement = node.namespace !== "http://www.w3.org/2000/svg";
     const framed = node.path === capture.rootPath || isHtmlElement || Boolean(repeatingPattern || layers.length || backgroundColor || border.stroke || effects.length || clipped);
     const frame = framed ? {

@@ -8,6 +8,8 @@ export async function captureSelection(target, sourceSelector, options = {}) {
     selector: sourceSelector,
     url: globalThis.location.href,
     requestAsset: options.requestAsset,
+    // Extensions may read closed shadow roots too: what they hold is on screen like the rest.
+    shadowRootOf: (element) => globalThis.chrome?.dom?.openOrClosedShadowRoot?.(element) ?? element.shadowRoot,
   });
   const countNodes = (node) => 1 + (node.children || []).reduce((total, child) => total + countNodes(child), 0);
   const capturedTags = Object.fromEntries(Object.entries(capture.nodes.reduce((counts, node) => {

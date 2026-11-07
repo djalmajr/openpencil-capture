@@ -184,7 +184,11 @@ function graphicPaint(node, strokeScale = 1, paintServers = new Map()) {
   const stroke = colorWithOpacity(safeColor(node.styles.stroke), node.styles.strokeOpacity);
   return {
     fill:fill || "#00000000",
-    ...(stroke ? { stroke, strokeWidth:round(px(node.styles.strokeWidth, 1) * strokeScale), strokeLinecap:"round", strokeLinejoin:"round" } : {}),
+    ...(stroke ? {
+      stroke, strokeWidth:round(px(node.styles.strokeWidth, 1) * strokeScale),
+      strokeLinecap:node.styles.strokeLinecap || "round", strokeLinejoin:node.styles.strokeLinejoin || "round",
+      ...svgDashes(node.styles.strokeDasharray, strokeScale),
+    } : {}),
     ...(node.styles.fillRule === "evenodd" ? { fillRule:"evenodd" } : {}),
     ...(px(node.styles.opacity, 1) < 1 ? { opacity:round(px(node.styles.opacity, 1)) } : {}),
   };
@@ -220,13 +224,30 @@ function relativeRect(node, parent) {
 function borderProperties(styles) {
   const sides = ["Top", "Right", "Bottom", "Left"];
   const widths = Object.fromEntries(sides.map((side) => [side.toLowerCase(), round(px(styles[`border${side}Width`]))]));
-  const visible = sides.find((side) => widths[side.toLowerCase()] > 0 && styles[`border${side}Style`] !== "none" && safeColor(styles[`border${side}Color`]));
+  const visible = sides.find((side) => widths[side.toLowerCase()] > 0 && !["none", "hidden"].includes(styles[`border${side}Style`]) && safeColor(styles[`border${side}Color`]));
   if (!visible) return {};
+  const width = widths[visible.toLowerCase()];
   return {
     stroke:safeColor(styles[`border${visible}Color`]),
     strokeWidth:widths.top === widths.right && widths.top === widths.bottom && widths.top === widths.left ? widths.top : widths,
     strokeAlignment:"inner",
+    ...borderDashes(styles[`border${visible}Style`], width),
   };
+}
+
+// Chromium's dashes, measured: a thin border dashes three widths on and two off, a thicker one
+// two on and one off; dots are squares one width apart.
+function borderDashes(style, width) {
+  if (style === "dashed") return {dashPattern:width < 3 ? [width * 3, width * 2] : [width * 2, width]};
+  if (style === "dotted") return {dashPattern:[width, width]};
+  return {};
+}
+
+// `stroke-dasharray` in the SVG's units, scaled like the stroke; an odd list repeats once.
+function svgDashes(value, scale) {
+  const lengths = String(value || "").split(/[\s,]+/).filter(Boolean).map((part) => px(part, Number.NaN));
+  if (!lengths.length || lengths.some((length) => !Number.isFinite(length) || length < 0) || lengths.every((length) => length === 0)) return {};
+  return {dashPattern:(lengths.length % 2 ? [...lengths, ...lengths] : lengths).map((length) => round(length * scale))};
 }
 
 const isTransparentColor = (value) => value === "transparent" || /^rgba\(.*,\s*0\)$/.test(String(value)) || /\/\s*0%?\s*\)$/.test(String(value));
@@ -408,8 +429,12 @@ function svgGraphic(node, parent, byPath, paintServers) {
   const base = { name:semanticLayerName(node), layoutPosition:"absolute", ...(node.tag === "path" ? svgRelativeRect : primitiveRect), ...graphicPaint(node, strokeScale, paintServers) };
   if (node.tag === "rect") return { type:"rectangle", ...base, cornerRadius:round(px(node.attributes.rx || node.attributes.ry)) };
   if (node.tag === "circle" || node.tag === "ellipse") {
-    const dash = String(node.styles.strokeDasharray || "").match(/([\d.]+)px[, ]+([\d.]+)px/);
-    const progress = dash && Number(dash[2]) > 0 ? clamp(Number(dash[1]) / Number(dash[2])) : 1;
+    // A progress ring draws one dash and a gap as long as the circle; other dash arrays are dashes.
+    const dash = String(node.styles.strokeDasharray || "").match(/^([\d.]+)px[, ]+([\d.]+)px$/);
+    const circumference = 2 * Math.PI * px(node.attributes.r || node.attributes.rx, 0);
+    const ring = dash && Number(dash[2]) > 0 && (!circumference || Number(dash[2]) >= circumference * 0.98);
+    const progress = ring ? clamp(Number(dash[1]) / Number(dash[2])) : 1;
+    if (ring) delete base.dashPattern;
     if (progress < 0.999) {
       // A partial ellipse is a closed sector, so its stroke also draws
       // radial edges. Progress rings need an open SVG arc instead.

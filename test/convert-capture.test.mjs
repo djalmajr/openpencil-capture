@@ -148,6 +148,22 @@ describe("convertCaptureToTree", () => {
     expect(circle.geometry).toMatch(/^M 13\.6 6\.8 A 6\.8 6\.8 0 1 1 /);
   });
 
+  test("keeps a dashed circle dashed instead of reading it as progress", () => {
+    const styles = {...rootStyles, backgroundColor:"transparent", fill:"none", stroke:"rgb(0, 0, 0)", strokeWidth:"2px", strokeDasharray:"6px, 4px", strokeLinecap:"butt"};
+    const circle = convertCaptureToTree(ir(["0", "div", [0, 0, 40, 40]], ["0.0", "svg", [0, 0, 40, 40], styles, {namespace:"http://www.w3.org/2000/svg", attributes:{viewBox:"0 0 40 40"}}],
+      ["0.0.0", "circle", [2, 2, 36, 36], styles, {namespace:"http://www.w3.org/2000/svg", attributes:{cx:"20", cy:"20", r:"18"}}])).root.children[0].children[0];
+    expect(circle).toMatchObject({type:"ellipse", dashPattern:[6, 4], strokeLinecap:"butt"});
+  });
+
+  test("dashes and dots borders the way Chromium draws them", () => {
+    const border = (style, width) => convertCaptureToTree(ir(["0", "div", [0, 0, 80, 40], Object.fromEntries(["Top", "Right", "Bottom", "Left"].flatMap((side) => [[`border${side}Width`, `${width}px`], [`border${side}Style`, style], [`border${side}Color`, "rgb(0, 0, 0)"]]))])).root;
+    expect(border("dashed", 2).dashPattern).toEqual([6, 4]);
+    expect(border("dashed", 4).dashPattern).toEqual([8, 4]);
+    expect(border("dotted", 2).dashPattern).toEqual([2, 2]);
+    expect(border("solid", 2).dashPattern).toBeUndefined();
+    expect(border("hidden", 2).stroke).toBeUndefined();
+  });
+
   test("turns shadcn shadow rings into editable card strokes", () => {
     const styles = {...rootStyles,backgroundColor:"rgb(255, 255, 255)",boxShadow:"rgba(0, 0, 0, 0) 0px 0px 0px 0px, oklab(0.153 -0.00176424 0.00573476 / 0.1) 0px 0px 0px 1px",borderTopWidth:"0px",borderRightWidth:"0px",borderBottomWidth:"0px",borderLeftWidth:"0px"};
     const capture = {format:"openpencil-capture-ir",version:1,rootPath:"0",label:"Card",source:{},nodes:[

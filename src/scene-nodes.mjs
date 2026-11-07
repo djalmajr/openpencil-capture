@@ -128,8 +128,9 @@ function strokeProperties(node) {
   const cap = STROKE_CAPS[node.strokeLinecap];
   const join = STROKE_JOINS[node.strokeLinejoin];
   return {
-    strokes:[{...solidPaint(node.stroke), weight, align, ...(cap ? {cap} : {}), ...(join ? {join} : {})}],
+    strokes:[{...solidPaint(node.stroke), weight, align, ...(cap ? {cap} : {}), ...(join ? {join} : {}), ...(node.dashPattern ? {dashPattern:node.dashPattern} : {})}],
     strokeWeight:weight,
+    ...(node.dashPattern ? {dashPattern:node.dashPattern} : {}),
     strokeAlign:align,
     ...(cap ? {strokeCap:cap} : {}),
     ...(join ? {strokeJoin:join} : {}),

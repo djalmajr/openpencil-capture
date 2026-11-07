@@ -53,7 +53,7 @@ During serialization the toolbar collapses to `Capturing selection…` or `Captu
 | SVG, AVIF and other images CanvasKit cannot decode | Image fill rasterized at twice the displayed size |
 | `grayscale()`, `brightness()` | Editable overlay layers above the image |
 | `mix-blend-mode` | Fill blend mode |
-| `box-shadow`, border, per-side border, radius | Effects, strokes and corners |
+| `box-shadow`, border, per-side border, radius | Effects, strokes and corners; dashed and dotted borders and SVG `stroke-dasharray` keep their dashes |
 
 Before serializing, the extension waits for SVG geometry to stabilize so animated charts are not copied mid-transition.
 
@@ -74,7 +74,7 @@ Limits of the capture model:
 - Open shadow roots, SVG `<use>` sprites and iframe content in a whole-page capture come out empty.
 - Gradients blend in sRGB whatever `in <space>` says, and color hints are ignored. `background-repeat:space` repeats without spacing.
 - An elliptical corner (`border-radius:50%` on a box that is not square, `10px 20px`) becomes circular, with the smaller radius.
-- Dashed strokes are not preserved.
+- A dashed or dotted border keeps Chromium's dash lengths, but the editor starts the dashes at a corner rather than centering them on each side, and draws dots square.
 
 When a resource cannot be read, or the clipboard is misused:
 

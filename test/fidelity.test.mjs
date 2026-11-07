@@ -51,6 +51,7 @@ describe("the pasted design looks like the page", () => {
     "an image covering its box from a corner": box("", `<img src="${QUADRANTS}" style="width:160px;height:96px;object-fit:cover;object-position:0% 0%;display:block">`),
     "a scrolled container clips its content": `<div id="root" style="width:160px;height:96px;overflow:auto;scrollbar-width:none;background:rgb(255, 255, 255)"><div style="height:300px;margin:0 20px;background:linear-gradient(rgb(255, 0, 0), rgb(0, 0, 255))"></div></div>`,
     "a circle drawn with a percentage radius": `<div id="root" style="width:96px;height:96px;border-radius:50%;background:rgb(0, 120, 255)"></div>`,
+    "a dashed SVG stroke": `<svg id="root" width="160" height="96" viewBox="0 0 80 48" style="display:block;background:rgb(255, 255, 255)"><path d="M4 24 H76" stroke="rgb(200, 30, 30)" stroke-width="4" stroke-dasharray="6 3"/></svg>`,
     "an image at its natural size": box("background:rgb(255, 255, 255)", `<img src="${QUADRANTS}" style="width:160px;height:96px;object-fit:none;object-position:right 20px top 10px;display:block">`),
   };
   for (const [name, html] of Object.entries(cases)) {

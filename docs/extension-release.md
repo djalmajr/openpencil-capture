@@ -1,6 +1,6 @@
 # Extension releases
 
-Releases are tagged `ext-vX.Y.Z`. Each one is a GitHub Release with one ZIP, which serves two uses: upload it to the Chrome Web Store as it is, or extract it and load the folder with Chrome's **Load unpacked**. The packaged manifest has no `key`, so the Store assigns the extension ID.
+Releases are tagged `vX.Y.Z`, one version for the extension and the CLI. Each one is a GitHub Release with one ZIP, which serves two uses: upload it to the Chrome Web Store as it is, or extract it and load the folder with Chrome's **Load unpacked**. The packaged manifest has no `key`, so the Store assigns the extension ID.
 
 ## Prepare a release
 
@@ -21,8 +21,8 @@ Releases are tagged `ext-vX.Y.Z`. Each one is a GitHub Release with one ZIP, whi
 After the release change reaches `main`:
 
 ```sh
-git tag -a ext-vX.Y.Z -m ext-vX.Y.Z
-git push origin ext-vX.Y.Z
+git tag -a vX.Y.Z -m vX.Y.Z
+git push origin vX.Y.Z
 ```
 
 The `Release extension` workflow checks that the tag, the manifest and the package agree and that the notes exist, runs the tests and the loaded-extension smoke, packages the ZIP with its SHA-256, and creates **OpenPencil Capture X.Y.Z** with the notes.

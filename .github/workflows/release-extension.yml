@@ -2,7 +2,7 @@ name: Release extension
 
 on:
   push:
-    tags: ["ext-v*"]
+    tags: ["v*"]
 
 permissions:
   contents: write
@@ -30,7 +30,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          version="${GITHUB_REF_NAME#ext-v}"
+          version="${GITHUB_REF_NAME#v}"
           if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "Invalid extension tag: $GITHUB_REF_NAME" >&2
             exit 1

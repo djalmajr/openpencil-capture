@@ -251,6 +251,22 @@ function intersects(box, clip) {
     && Math.min(box.bottom, clip.bottom) - Math.max(box.top, clip.top) > 1;
 }
 
+// `clip-path:inset()` cuts the element and everything in it to a rectangle (rounding aside), so
+// nothing outside it is read. Other shapes are masked in the design instead.
+function insetClip(computed, box, clip) {
+  const match = String(computed.clipPath || "").match(/^inset\(([^)]*)\)/i);
+  if (!match) return clip;
+  const words = match[1].split(/\s+round\s+/i)[0].trim().split(/\s+/);
+  const [top = "0px", right = top, bottom = top, left = right] = words;
+  const width = box.right - box.left;
+  const height = box.bottom - box.top;
+  const length = (value, range) => value.endsWith("%") ? Number.parseFloat(value) / 100 * range : Number.parseFloat(value) || 0;
+  return {
+    left:Math.max(clip.left, box.left + length(left, width)), top:Math.max(clip.top, box.top + length(top, height)),
+    right:Math.min(clip.right, box.right - length(right, width)), bottom:Math.min(clip.bottom, box.bottom - length(bottom, height)),
+  };
+}
+
 // Descendants are clipped to the padding box of an ancestor whose overflow is not visible.
 function contentClip(computed, box, clip) {
   const left = box.left + Number.parseFloat(computed.borderLeftWidth || 0);
@@ -320,7 +336,7 @@ function externalUseFile(node) {
   if (!href || href.startsWith("#")) return null;
   try {
     const url = new URL(href, node.ownerDocument.baseURI);
-    if (url.origin !== new URL(node.ownerDocument.URL).origin || !url.hash) return null;
+    if (!["http:", "https:"].includes(url.protocol) || url.origin !== new URL(node.ownerDocument.URL).origin || !url.hash) return null;
     return {file:url.href.slice(0, -url.hash.length), id:decodeURIComponent(url.hash.slice(1))};
   } catch {
     return null;
@@ -337,6 +353,7 @@ function useTarget(node, externals) {
 }
 
 const EXTERNAL_FETCH_TIMEOUT_MS = 3000;
+const EXTERNAL_FILE_LIMIT = 4 * 1024 * 1024;
 
 // The files the selection's external <use> elements show, which the browser loaded to draw them,
 // parsed; a file that does not come back as SVG is left out.
@@ -344,7 +361,8 @@ async function loadUseFiles(root, shadowRootOf) {
   const uses = [];
   const collect = (scope) => {
     for (const element of scope.querySelectorAll("*")) {
-      if (element.localName === "use" && element.namespaceURI === SVG_NAMESPACE) uses.push(element);
+      // Only a <use> the page draws: a hidden one's file never shows.
+      if (element.localName === "use" && element.namespaceURI === SVG_NAMESPACE && isRendered(element)) uses.push(element);
       const shadow = shadowRootOf(element);
       if (shadow) collect(shadow);
     }
@@ -355,9 +373,12 @@ async function loadUseFiles(root, shadowRootOf) {
   const documents = new Map();
   await Promise.all(Array.from(files, async (file) => {
     try {
+      // The page's own request for its own file, as the browser made it to draw the <use>.
       const response = await fetch(file, {credentials:"same-origin", cache:"force-cache", signal:AbortSignal.timeout(EXTERNAL_FETCH_TIMEOUT_MS)});
-      if (!response.ok) return;
-      const parsed = new DOMParser().parseFromString(await response.text(), "image/svg+xml");
+      if (!response.ok || !/^(image\/svg\+xml|application\/xml|text\/xml)\b/i.test(response.headers.get("content-type") || "")) return;
+      const text = await response.text();
+      if (text.length > EXTERNAL_FILE_LIMIT) return;
+      const parsed = new DOMParser().parseFromString(text, "image/svg+xml");
       if (parsed.documentElement?.namespaceURI === SVG_NAMESPACE) documents.set(file, parsed);
     } catch {}
   }));
@@ -476,7 +497,8 @@ function flowItems(node, childNodes, view) {
       const range = node.ownerDocument.createRange();
       range.selectNodeContents(child);
       const rects = Array.from(range.getClientRects()).filter((rect) => rect.width > 0 && rect.height > 0);
-      if (rects.length) items.push({text:true, parent:child.parentElement, first:rects[0], last:rects.at(-1)});
+      // Text straight inside a shadow root has no parent element; it takes the host's styles.
+      if (rects.length) items.push({text:true, parent:child.parentElement || node, first:rects[0], last:rects.at(-1)});
     } else if (child.nodeType === 1) {
       const style = view.getComputedStyle(child);
       if (style.display === "none" || ["absolute", "fixed"].includes(style.position)) continue;
@@ -727,7 +749,7 @@ export async function captureElement(root, options = {}) {
     const childNodes = closedDetails
       ? Array.from(node.children).filter((child) => child.localName === "summary").slice(0, 1)
       : flatChildNodes(node, shadowRootOf);
-    const ownClip = contentClip(computed, box, clip);
+    const ownClip = insetClip(computed, box, contentClip(computed, box, clip));
     const snapshot = shown
       ? directTextSnapshot(node, {x:rootRect.x - offset.x, y:rootRect.y - offset.y}, computed, childNodes, shift(ownClip, -offset.x, -offset.y))
       : textFromRuns([]);
@@ -801,8 +823,10 @@ export async function captureElement(root, options = {}) {
         visit(frame.documentElement, `${path}.0`, path, {inResources:false, offset:{x:left, y:top}, clip:frameClip, canvas:frameClip, propagated:frameCanvas?.element});
         return;
       }
-      // Another origin's document: only what shows, in the frame's own coordinates.
-      if (node.contentWindow && intersects(frameClip, frameClip)) {
+      // Another origin's document: only what shows, in the frame's own coordinates. A frame scaled
+      // or turned by a transform maps its viewport otherwise, so it stays empty.
+      const untransformed = Math.abs(raw.width - node.offsetWidth) <= 0.5 && Math.abs(raw.height - node.offsetHeight) <= 0.5;
+      if (node.contentWindow && untransformed && intersects(frameClip, frameClip)) {
         pendingFrames.push({element:node, request:{path, offset:{x:left - rootRect.x, y:top - rootRect.y},
           clip:{left:frameClip.left - left, top:frameClip.top - top, right:frameClip.right - left, bottom:frameClip.bottom - top}}});
       }

@@ -88,9 +88,9 @@ export function filterHex(hex, functions) {
 
 const filterStops = (colors, functions) => colors.map((stop) => ({...stop, color:filterHex(stop.color, functions)}));
 
-function filterFill(fill, functions, css) {
-  if (!fill) return fill;
-  if (Array.isArray(fill)) return fill.map((layer) => filterFill(layer, functions, css));
+function filterFill(fill, functions, css, skip) {
+  if (!fill || (typeof fill === "object" && skip(fill))) return fill;
+  if (Array.isArray(fill)) return fill.map((layer) => filterFill(layer, functions, css, skip));
   if (typeof fill === "string") return filterHex(fill, functions);
   if (fill.type === "color") return {...fill, color:filterHex(fill.color, functions)};
   if (fill.type === "gradient") return {...fill, colors:filterStops(fill.colors, functions)};
@@ -107,14 +107,14 @@ function filterFill(fill, functions, css) {
 /**
  * Applies an element's color filter to everything it paints: every color of the subtree's fills,
  * strokes and shadows, and, for CSS background images, the functions baked into their pixels.
- * Nodes and effects in `skip` already took the filter: an <img> gets its whole chain of filters
- * from the page, and a drop-shadow only the functions after it.
+ * Fills and effects `skip` names already took the filter. A mask is left alone: the filter
+ * applies to what the mask lets through, not to the mask.
  */
-export function filterTree(node, functions, skip = new WeakSet()) {
-  if (!functions.length || !node || skip.has(node)) return;
+export function filterTree(node, functions, skip = () => false) {
+  if (!functions.length || !node || node.isMask) return;
   const css = functions.map(({name, args}) => `${name}(${args})`).join(" ");
-  const filterEffect = (effect) => !skip.has(effect) && effect.color ? {...effect, color:filterHex(effect.color, functions)} : effect;
-  if (node.fill) node.fill = filterFill(node.fill, functions, css);
+  const filterEffect = (effect) => !skip(effect) && effect.color ? {...effect, color:filterHex(effect.color, functions)} : effect;
+  if (node.fill) node.fill = filterFill(node.fill, functions, css, skip);
   if (node.stroke) node.stroke = filterHex(node.stroke, functions);
   if (node.effect) node.effect = Array.isArray(node.effect) ? node.effect.map(filterEffect) : filterEffect(node.effect);
   for (const child of node.children || []) filterTree(child, functions, skip);

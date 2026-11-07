@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { convertCaptureToTree, cssBackgroundToFill, cssColorToHex } from "../src/convert-capture.mjs";
-import { filterHex } from "../src/css-effects.mjs";
+import { filterHex, filterTree } from "../src/css-effects.mjs";
 
 const rootStyles = { backgroundColor:"oklch(1 0 0)", borderTopColor:"oklch(0.93 0.007 106.5)", borderTopLeftRadius:"8px", borderTopRightRadius:"8px", borderBottomRightRadius:"8px", borderBottomLeftRadius:"8px", opacity:"1" };
 
@@ -354,7 +354,7 @@ describe("convertCaptureToTree", () => {
     expect(root.children[0]).toMatchObject({type:"frame",clip:true,metadata:{type:"openpencil-capture-image-filter",filter:"brightness(0.6) grayscale(1)"}});
     expect(root.children[0].children[0]).toMatchObject({type:"rectangle",fill:{type:"image",url:"https://example.com/photo.png"}});
     expect(root.children[0].children[1]).toMatchObject({fill:{type:"color",blendMode:"saturation"}});
-    expect(root.children[0].children[2]).toMatchObject({fill:"#00000066"});
+    expect(root.children[0].children[2]).toMatchObject({fill:{type:"color", color:"#00000066"}});
     expect(root.children[1]).toMatchObject({type:"rectangle",name:"Canvas · Snapshot",fill:{type:"image",url:"data:image/png;base64,BBBB",mode:"stretch"}});
   });
 
@@ -618,5 +618,42 @@ describe("dashed borders", () => {
     expect(root.children[0]).toMatchObject({geometry:expect.stringMatching(/^M 16 2 H 144 A 14 14 0 0 1 158 16/), dashPattern:[8, expect.closeTo(4.08, 1)]});
     // A radius no larger than the border leaves the inner edge square, and the sides dash apart.
     expect(convertCaptureToTree(ir(["0", "div", [0, 0, 160, 96], {...corners("3px"), ...sides("dashed", "4px")}])).root.children).toHaveLength(4);
+  });
+});
+
+// Regressions found in review of the closed limitations.
+describe("closed limitations, at the edges", () => {
+  const dashed = (size, width) => ir(["0", "div", [0, 0, size, size], Object.fromEntries(["Top", "Right", "Bottom", "Left"].flatMap((side) => [[`border${side}Style`, "dashed"], [`border${side}Width`, `${width}px`], [`border${side}Color`, "rgb(0, 0, 0)"], [`border${side === "Top" ? "TopLeft" : side === "Right" ? "TopRight" : side === "Bottom" ? "BottomRight" : "BottomLeft"}Radius`, "0px"]]))]);
+  test("draws a side too short for two dashes solid instead of failing", () => {
+    for (const [size, width] of [[10, 3], [11, 2], [5.5, 1]]) {
+      const {root} = convertCaptureToTree(dashed(size, width));
+      expect(root.children.every((line) => line.dashPattern === undefined)).toBe(true);
+    }
+  });
+
+  test("filters what a mask lets through, never the mask", () => {
+    const tree = {children:[{isMask:true, fill:"#FFFFFF", children:[{fill:"#FFFFFF"}]}, {fill:"#FFFFFF"}]};
+    filterTree(tree, [{name:"invert", args:"1"}]);
+    expect(tree.children[0].fill).toBe("#FFFFFF");
+    expect(tree.children[0].children[0].fill).toBe("#FFFFFF");
+    expect(tree.children[1].fill).toBe("#000000");
+  });
+
+  test("lets an ancestor's filter reach a drop shadow and an image's background", () => {
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 80, 40], {filter:"invert(1)"}],
+      ["0.0", "div", [0, 0, 40, 20], {backgroundColor:"rgb(255, 0, 0)", filter:"drop-shadow(rgb(0, 0, 0) 0px 0px 2px)"}],
+      ["0.1", "img", [40, 0, 40, 20], {backgroundColor:"rgb(255, 0, 0)", borderTopLeftRadius:"4px", borderTopRightRadius:"4px", borderBottomRightRadius:"4px", borderBottomLeftRadius:"4px"}, {attributes:{currentSrc:"https://example.test/a.png", effectiveFilter:"invert(1)"}}]));
+    const [box, image] = root.children;
+    expect(box.effect.color).toBe("#FFFFFF");
+    expect(image.fill).toBe("#00FFFF");
+    // The pixels took the page's chain once.
+    expect(image.children[0].fill.filter).toBe("invert(1)");
+  });
+
+  test("keeps an elliptical box's shadow on the frame when the frame clips", () => {
+    const corners = Object.fromEntries(["borderTopLeftRadius", "borderTopRightRadius", "borderBottomRightRadius", "borderBottomLeftRadius"].map((key) => [key, "40px 10px"]));
+    const {root} = convertCaptureToTree(ir(["0", "div", [0, 0, 120, 60], {...corners, overflow:"hidden", boxShadow:"rgb(0, 0, 0) 0px 4px 12px 0px"}]));
+    expect(root).toMatchObject({clip:true, effect:{shadowType:"outer"}});
+    expect(root.children[0].effect).toBeUndefined();
   });
 });

@@ -74,7 +74,7 @@ Images and canvas pixels travel inside the clipboard, so pasting needs no networ
 
 ### Sensitive values
 
-Values the page masks paste as bullets, both `type=password` fields and anything using `-webkit-text-security`. Nothing the page does not render is read: content under `display:none`, `opacity:0` or `content-visibility:hidden` (`hidden=until-found`), everything in a closed `<details>` but its summary, text under `visibility:hidden`, a hidden frame, `type=hidden` fields, and text or control values moved off the page or clipped out of sight, character by character, by an `overflow` box inside the selection. A frame of another origin gives only what shows through its `<iframe>`.
+Values the page masks paste as bullets, both `type=password` fields and anything using `-webkit-text-security`. Nothing the page does not render is read: content under `display:none`, `opacity:0` or `content-visibility:hidden` (`hidden=until-found`), everything in a closed `<details>` but its summary, text under `visibility:hidden`, a hidden frame, `type=hidden` fields, and text or control values moved off the page or clipped out of sight, character by character, by an `overflow` box inside the selection. A frame of another origin gives only what shows through its `<iframe>`, and `clip-path:inset()` hides what it cuts. A sprite file is fetched only for a `<use>` the page draws, over http(s), and used only if it comes back as SVG.
 
 ### Known limitations
 
@@ -85,7 +85,9 @@ Limits of the capture model:
 - List markers follow `list-style-type` and the list's numbering (`start`, `value`, `reversed`); custom counters and `list-style-image` are left out.
 - Color filters on CSS background images are baked only by the extension: the CLI keeps the image unfiltered. `filter:url()` and other `backdrop-filter` functions than `blur()` are dropped.
 - Masks stack their layers as `mask-composite:add` does, whatever the value. A `<mask>` or `<clipPath>` takes its direct shapes, not `<use>`, `<text>` or nested groups, and not a `<mask>`'s region. Gradients defined inside a sprite file a `<use>` shows are left out.
-- A frame of another origin is captured when something can run there: the extension's script, injected in every frame when capture mode opens (a frame that loads later stays empty until it is reopened), or the CLI's browser. A frame that refuses it stays empty and is listed in the capture's `frames`.
+- A frame of another origin is captured when something can run there: the extension's script, injected in every frame when capture mode opens (a frame that loads later stays empty until it is reopened), or the CLI's browser. A frame that refuses it, one scaled or turned by a CSS transform, and, in the extension, one inside a shadow tree stay empty; the capture lists the ones it could not reach in `frames`.
+- `clip-path:inset()` keeps what it cuts away out of the capture. Other clip shapes and masks hide content in the design, but the masked layers still hold it.
+- Ids are looked up across the whole capture, so a frame and the page that share an id for a gradient, `<clipPath>` or `<mask>` can pick up each other's.
 - A gradient that blends outside sRGB (`in oklab`, `oklch` stops) or through a color hint gets stops in between, so it is close but no longer has only the stops written. `lab`, `lch`, `hsl` and `hwb` blend as `oklab`, `oklch` and sRGB. `background-repeat:space` repeats without spacing.
 - A border with different colors per side takes one color. A dashed border with rounded corners and sides of different widths keeps the editor's dashes.
 

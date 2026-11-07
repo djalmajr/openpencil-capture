@@ -304,11 +304,38 @@ describe("a frame from another origin", () => {
   });
 });
 
+describe("closed limitations, at the edges", () => {
+  test("places a pseudo-element next to text straight inside a shadow root", async () => {
+    const capture = await captureHtml(`<style>x-host::before{content:"* "}</style><div id="root"><x-host></x-host></div>`, "#root", {before:() => {
+      customElements.define("x-host", class extends HTMLElement { constructor() { super(); this.attachShadow({mode:"open"}).textContent = "Hello shadow"; } });
+    }});
+    expect(capture.nodes.find((node) => node.tag === "::before")?.text).toBe("*");
+  });
+
+  test("reads nothing a clip-path inset cuts away", async () => {
+    const capture = await captureHtml(`<div id="root" style="clip-path:inset(0 0 50% 0);height:80px;font:14px Arial"><p style="margin:0">top-visible</p><p style="margin:50px 0 0">bottom-secret</p></div>`);
+    expect(leaked(capture, ["bottom-secret"])).toEqual([]);
+    expect(leaked(capture, ["top-visible"])).toEqual(["top-visible"]);
+  });
+
+  test("leaves a transformed frame of another origin empty", async () => {
+    const capture = await captureHtml(`<div id="root" style="width:200px;height:60px;overflow:hidden"><iframe src="https://frames.test/f.html" style="border:0;width:100px;height:60px;transform:scale(2);transform-origin:0 0"></iframe></div>`, "#root", {files:{"https://frames.test/f.html":`<body style="margin:0"><p style="margin:0">frame-text</p><p style="margin:45px 0 0">scaled-away-secret</p></body>`}});
+    expect(leaked(capture, ["frame-text", "scaled-away-secret"])).toEqual([]);
+  });
+});
+
 describe("a <use> that references another file", () => {
   const sprite = `<svg xmlns="http://www.w3.org/2000/svg"><symbol id="dot" viewBox="0 0 10 10"><circle cx="5" cy="5" r="4" fill="red"/></symbol></svg>`;
   test("reads a same-origin file the page draws from", async () => {
     const capture = await captureHtml(`<div id="root"><svg width="20" height="20"><use href="/s.svg#dot"/></svg></div>`, "#root", {files:{"/s.svg":sprite}});
     expect(capture.nodes.find((node) => node.tag === "circle")?.styles.fill).toBe("rgb(255, 0, 0)");
+  });
+
+  test("fetches no file for a hidden <use>, and uses none that is not SVG", async () => {
+    const requests = [];
+    const capture = await captureHtml(`<div id="root"><svg width="20" height="20" style="display:none"><use href="/hidden.svg#dot"/></svg><svg width="20" height="20"><use href="/s.txt#dot"/></svg></div>`, "#root", {files:{"/hidden.svg":sprite, "/s.txt":sprite}, requests});
+    expect(requests.filter((url) => url.endsWith("hidden.svg"))).toEqual([]);
+    expect(capture.nodes.some((node) => node.tag === "circle")).toBe(false);
   });
 
   // Chromium draws no cross-origin <use>, so the capture must not fetch one either.

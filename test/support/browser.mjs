@@ -24,7 +24,7 @@ export function useBrowser() {
           if (url.href === "https://example.test/page") return route.fulfill({contentType:"text/html", body:document});
           const body = url.origin === "https://example.test" ? files[url.pathname] : files[url.href];
           if (body == null) return route.fulfill({status:404, body:""});
-          return route.fulfill({contentType:url.pathname.endsWith(".html") ? "text/html" : "image/svg+xml", body});
+          return route.fulfill({contentType:url.pathname.endsWith(".html") ? "text/html" : url.pathname.endsWith(".txt") ? "text/plain" : "image/svg+xml", body});
         });
         await page.goto("https://example.test/page", {waitUntil:"load"});
       } else {

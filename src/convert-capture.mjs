@@ -421,6 +421,7 @@ function sideDashes(length, dash, gap) {
   const gapFor = (count) => (length - count * dash) / (count - 1);
   const fewer = Math.max(2, Math.floor((length + gap) / (dash + gap)));
   const counts = [fewer, fewer + 1].filter((count) => gapFor(count) >= 0);
+  if (!counts.length) return null;
   const count = counts.reduce((best, count) => Math.abs(gapFor(count) - gap) <= Math.abs(gapFor(best) - gap) ? count : best);
   return {count, gap:gapFor(count)};
 }
@@ -636,8 +637,10 @@ const filterNumber = (value) => {
 
 // What a filter becomes in the editor: blurs and drop shadows as effects, opacity() as layer
 // opacity. Color functions stay for images, which take them in their pixels.
-// Layers and effects whose colors already went through the filters that reach them.
-const settled = new WeakSet();
+// Image fills whose pixels already took every filter that reaches them (an <img>'s chain, from
+// the page), and each drop shadow's element, whose own filter it took only in part.
+const pixelsFiltered = new WeakSet();
+const shadowOwners = new WeakMap();
 
 function filterEffects(filter) {
   const effects = [];
@@ -649,19 +652,16 @@ function filterEffects(filter) {
     if (name === "drop-shadow") {
       const [shadow] = parseCssShadows(args);
       // A shadow takes only the color functions applied after it.
-      if (shadow) {
-        const effect = {...shadow, spread:0, color:filterHex(shadow.color, colorFilterFunctions(functions.slice(index + 1)))};
-        settled.add(effect);
-        effects.push(effect);
-      }
+      if (shadow) effects.push({...shadow, spread:0, color:filterHex(shadow.color, colorFilterFunctions(functions.slice(index + 1)))});
     }
   });
   return {effects, opacity};
 }
 
-// The color functions of an element's own filter reach every color it and its content paint.
+// The color functions of an element's own filter reach every color it and its content paint,
+// but its own drop shadows, which took the functions after them, and filtered image pixels.
 function applyColorFilter(node, layer) {
-  if (layer) filterTree(layer, colorFilterFunctions(filterFunctions(node.styles.filter)), settled);
+  if (layer) filterTree(layer, colorFilterFunctions(filterFunctions(node.styles.filter)), (item) => pixelsFiltered.has(item) || shadowOwners.get(item) === node);
   return layer;
 }
 
@@ -693,13 +693,14 @@ function filteredImageNode(node, parent, url) {
   const brightness = filterAmount(filter,"brightness");
   const darkened = Number.isFinite(brightness) && brightness >= 0 && brightness < 1;
   const baked = bakedFilter(filter);
-  // The background is painted through the functions the pixels take; the overlays cover it too.
-  const backgroundColor = filterHex(safeColor(node.styles.backgroundColor), colorFilterFunctions(filterFunctions(baked)));
+  const backgroundColor = safeColor(node.styles.backgroundColor);
   const radius = cornerRadius(node);
   const coversBox = placement && placement.region.x === 0 && placement.region.y === 0 && placement.region.width === rect.width && placement.region.height === rect.height;
   const metadata = filter && filter !== "none" ? {metadata:{type:"openpencil-capture-image",filter}} : {};
   if (placement && baked) placement.fill = {...placement.fill, filter:baked};
+  if (placement) pixelsFiltered.add(placement.fill);
   const own = filterEffects(node.styles.filter);
+  for (const effect of own.effects) shadowOwners.set(effect, node);
   const effectProperties = {
     ...(own.effects.length ? {effect:own.effects.length === 1 ? own.effects[0] : own.effects} : {}),
     ...(own.opacity < 1 ? {opacity:round(own.opacity)} : {}),
@@ -712,8 +713,10 @@ function filteredImageNode(node, parent, url) {
   }
   const full = {layoutPosition:"absolute",x:0,y:0,width:rect.width,height:rect.height};
   const children = placement ? [{type:"rectangle",name:`${semanticLayerName(node)} · Source`,layoutPosition:"absolute",...placement.region,fill:placement.fill}] : [];
-  if (grayscale > 0) children.push({type:"rectangle",name:`${semanticLayerName(node)} · Grayscale`,...full,fill:{type:"color",color:`#808080${Math.round(Math.min(1,grayscale)*255).toString(16).padStart(2,"0").toUpperCase()}`,blendMode:"saturation"}});
-  if (darkened) children.push({type:"rectangle",name:`${semanticLayerName(node)} · Brightness`,...full,fill:`#000000${Math.round((1-brightness)*255).toString(16).padStart(2,"0").toUpperCase()}`});
+  // The overlays stand for the page's filters; no filter recolors them again.
+  const overlay = (fill) => { pixelsFiltered.add(fill); return fill; };
+  if (grayscale > 0) children.push({type:"rectangle",name:`${semanticLayerName(node)} · Grayscale`,...full,fill:overlay({type:"color",color:`#808080${Math.round(Math.min(1,grayscale)*255).toString(16).padStart(2,"0").toUpperCase()}`,blendMode:"saturation"})});
+  if (darkened) children.push({type:"rectangle",name:`${semanticLayerName(node)} · Brightness`,...full,fill:overlay({type:"color",color:`#000000${Math.round((1-brightness)*255).toString(16).padStart(2,"0").toUpperCase()}`})});
   return {type:"frame",name:semanticLayerName(node),layout:"none",layoutPosition:"absolute",...rect,clip:true,cornerRadius:radius,
     ...(backgroundColor ? {fill:backgroundColor} : {}),metadata:{type:filter && filter !== "none" ? "openpencil-capture-image-filter" : "openpencil-capture-image",filter},...effectProperties,children};
 }
@@ -949,12 +952,8 @@ export function convertCaptureToTree(capture) {
       }
       if (!url) { stats.skipped += 1; return null; }
       stats.images += 1;
-      // An <img> already takes the filters of its ancestors; they must not reach it twice.
-      if (node.tag === "img") {
-        const image = filteredImageNode(node,parent,url);
-        if (image) settled.add(image);
-        return withCssMasks(node, image, capture, maskContext);
-      }
+      // An <img>'s pixels already take the filters of its ancestors; its other colors do not.
+      if (node.tag === "img") return withCssMasks(node, applyColorFilter(node, filteredImageNode(node,parent,url)), capture, maskContext);
       return withCssMasks(node, applyColorFilter(node, {type:"rectangle",name:semanticLayerName(node),layoutPosition:"absolute",...relativeRect(node,parent),fill:{type:"image",url,mode:"stretch"},cornerRadius:cornerRadius(node)}), capture, maskContext);
     }
     // A frame shows its document's canvas background, which the element it came from no longer paints.
@@ -976,6 +975,7 @@ export function convertCaptureToTree(capture) {
     const shadows = parseCssShadows(node.styles.boxShadow);
     const border = Object.keys(borderProperties(node.styles)).length ? borderProperties(node.styles) : shadowRingBorder(shadows);
     const filtered = filterEffects(node.styles.filter);
+    for (const effect of filtered.effects) shadowOwners.set(effect, node);
     const effects = [
       ...shadows.filter((shadow) => !(border.stroke === shadow.color && border.strokeWidth === shadow.spread && shadow.offset.x === 0 && shadow.offset.y === 0 && shadow.blur === 0)),
       ...filtered.effects, ...backdropEffects(node.styles.backdropFilter || node.styles.webkitBackdropFilter),
@@ -1008,8 +1008,10 @@ export function convertCaptureToTree(capture) {
     if (framed) stats.frames += 1; else stats.groups += 1;
     const elliptical = framed && !clipsText ? ellipticalCorners(node) : null;
     if (elliptical) {
-      const shadowEffects = effects.filter((effect) => effect.type === "shadow");
-      const others = effects.filter((effect) => effect.type !== "shadow");
+      // Box shadows follow the outline, unless the frame clips, which would cut them off; a
+      // drop-shadow filter shadows the whole element, content included, so it stays on the frame.
+      const shadowEffects = clipped ? [] : effects.filter((effect) => shadows.includes(effect));
+      const others = effects.filter((effect) => !shadowEffects.includes(effect));
       frame.children.push(...ellipticalBoxLayers(node, elliptical, {fills, border, shadows:shadowEffects}));
       for (const key of ["fill", "stroke", "strokeWidth", "strokeAlignment", "dashPattern", "effect"]) delete frame[key];
       if (others.length) frame.effect = others.length === 1 ? others[0] : others;

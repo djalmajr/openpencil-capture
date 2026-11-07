@@ -3,6 +3,12 @@ import { convertCaptureToTree, cssBackgroundToFill, cssColorToHex } from "../src
 
 const rootStyles = { backgroundColor:"oklch(1 0 0)", borderTopColor:"oklch(0.93 0.007 106.5)", borderTopLeftRadius:"8px", borderTopRightRadius:"8px", borderBottomRightRadius:"8px", borderBottomLeftRadius:"8px", opacity:"1" };
 
+// A capture of `elements`, the first one the root; each is [path, tag, rect, styles, fields].
+const ir = (...elements) => ({format:"openpencil-capture-ir", version:1, rootPath:"0", label:"Fixture", source:{url:"https://example.test/"}, nodes:elements.map(([path, tag, rect, styles = {}, fields = {}]) => ({
+  path, parentPath:path.includes(".") ? path.slice(0, path.lastIndexOf(".")) : null, tag, name:tag, text:null, textRuns:[],
+  rect:{x:rect[0], y:rect[1], width:rect[2], height:rect[3]}, attributes:{}, ...fields, styles:{...rootStyles, ...styles},
+}))});
+
 describe("cssColorToHex", () => {
   test("converts shadcn OKLCH and transparent colors", () => {
     expect(cssColorToHex("oklch(1 0 0)")).toBe("#FFFFFF");
@@ -11,6 +17,11 @@ describe("cssColorToHex", () => {
     expect(cssColorToHex("none")).toBeNull();
     expect(cssColorToHex("lab(66.9756 -58.27 19.5419)")).toBe("#00BC7D");
     expect(cssColorToHex("lab(76.3898 14.5258 98.4589)")).toBe("#F0B100");
+  });
+
+  test("reads a shadow painted in a color() space", () => {
+    const tree = convertCaptureToTree(ir(["0", "div", [0, 0, 100, 50], {boxShadow:"color(srgb 1 0 0) 0px 4px 8px 0px"}]));
+    expect(tree.root.effect).toMatchObject({shadowType:"outer", color:"#FF0000", blur:8});
   });
 });
 

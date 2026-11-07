@@ -1,5 +1,6 @@
 import { describe, expect, setDefaultTimeout, test } from "bun:test";
-import { convertCaptureToTree } from "../src/convert-capture.mjs";
+import { convertCaptureToTree, cssColorToHex } from "../src/convert-capture.mjs";
+import { hexToColor } from "../src/scene-nodes.mjs";
 import { useBrowser } from "./support/browser.mjs";
 
 const captureHtml = useBrowser();
@@ -50,5 +51,35 @@ describe("what a capture may contain", () => {
   test("records the blend mode an overlay paints with", async () => {
     const capture = await captureHtml(`<div id="root"><div style="width:20px;height:20px;background:red;mix-blend-mode:multiply"></div></div>`);
     expect(capture.nodes[1].styles.mixBlendMode).toBe("multiply");
+  });
+});
+
+describe("colors as the browser paints them", () => {
+  // Mutation captured: a wrong matrix or transfer function moves a channel by more than 2/255.
+  test("converts every computed color syntax to the sRGB the browser paints", async () => {
+    const colors = [
+      "lch(50% 40 120)", "lab(50 -20 30)", "oklch(0.6 0.1 200)", "oklch(none 0.05 20)", "oklab(0.7 -0.05 0.08 / 0.5)",
+      "color(display-p3 0.8 0.3 0.2)", "color(srgb 0.5 0.25 0.75)", "color(srgb-linear 0.2 0.5 0.1)",
+      "color(rec2020 0.5 0.3 0.2)", "color(a98-rgb 0.5 0.4 0.3)", "color(prophoto-rgb 0.5 0.4 0.3)",
+      "color(xyz-d65 0.2 0.3 0.4)", "color(xyz-d50 0.3 0.3 0.2)", "color-mix(in srgb, red 30%, blue)", "hsl(120 50% 50%)",
+    ];
+    const painted = await captureHtml.evaluate((colors) => colors.map((color) => {
+      const probe = document.createElement("div");
+      probe.style.color = color;
+      document.body.append(probe);
+      const computed = getComputedStyle(probe).color;
+      const context = Object.assign(document.createElement("canvas"), {width:1, height:1}).getContext("2d");
+      context.fillStyle = computed;
+      context.fillRect(0, 0, 1, 1);
+      return {color, computed, pixel:Array.from(context.getImageData(0, 0, 1, 1).data)};
+    }), colors);
+    const misses = painted.flatMap(({color, computed, pixel}) => {
+      const {r, g, b, a} = hexToColor(cssColorToHex(computed));
+      const ours = [r, g, b].map((value) => Math.round(value * 255));
+      const theirs = pixel.slice(0, 3);
+      const off = Math.max(...ours.map((value, index) => Math.abs(value - theirs[index])), Math.abs(Math.round(a * 255) - pixel[3]));
+      return off > 2 ? [{color, computed, ours, theirs}] : [];
+    });
+    expect(misses).toEqual([]);
   });
 });

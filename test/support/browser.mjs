@@ -11,7 +11,7 @@ export function useBrowser() {
     state.script = await captureBundle();
   });
   afterAll(() => state.browser?.close());
-  return async function captureHtml(html, selector = "#root", {viewport = {width:800, height:600}, before} = {}) {
+  const captureHtml = async function captureHtml(html, selector = "#root", {viewport = {width:800, height:600}, before} = {}) {
     const page = await state.browser.newPage({viewport, deviceScaleFactor:1});
     try {
       await page.setContent(`<!doctype html><html><body style="margin:0">${html}</body></html>`, {waitUntil:"load"});
@@ -22,4 +22,10 @@ export function useBrowser() {
       await page.close();
     }
   };
+  // Runs `fn` in a blank page, for asking the browser itself how it renders something.
+  captureHtml.evaluate = async (fn, argument) => {
+    const page = await state.browser.newPage();
+    try { return await page.evaluate(fn, argument); } finally { await page.close(); }
+  };
+  return captureHtml;
 }

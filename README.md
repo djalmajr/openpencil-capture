@@ -71,7 +71,7 @@ Limits of the capture model:
 - Open shadow roots, SVG `<use>` sprites and iframe content in a whole-page capture come out empty.
 - Radial and conic gradients are dropped, and `to <side>` linear gradients render top to bottom. In a layered background, only the first image or gradient survives.
 - A percentage `border-radius` is read as pixels, and `overflow:auto` or `scroll` containers do not clip.
-- Colors outside `rgb`, `oklch`, `oklab` and `lab` are dropped, and transparent text becomes black.
+- Transparent text becomes black.
 - `background-repeat`, `background-size` lengths, dashed strokes and `<pre>` whitespace are not preserved.
 
 When a resource cannot be read, or the clipboard is misused:

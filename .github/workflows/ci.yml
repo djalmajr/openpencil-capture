@@ -22,14 +22,14 @@ jobs:
       - run: bun run verify
       - run: bun run smoke:iframe
       - run: bun run smoke:extension-iframe
-      # Every build of main can be downloaded and loaded by hand, or uploaded to the Store.
+      # Every change must package; every build of main can be downloaded and loaded by hand.
       - name: Package extension
-        if: github.event_name == 'push'
         run: bun run package:ext
-      - name: Upload extension package
+      # The artifact is itself a ZIP, so it holds the extension's files, not a ZIP inside a ZIP.
+      - name: Upload extension build
         if: github.event_name == 'push'
         uses: actions/upload-artifact@v4
         with:
           name: openpencil-capture-extension
-          path: artifacts/openpencil-capture-*.zip
+          path: dist/extension/
           if-no-files-found: error

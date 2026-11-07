@@ -1,6 +1,6 @@
 // Draws the Chrome Web Store images from the real extension: the picker on a page, the same card
-// pasted into OpenPencil and rendered by its engine, and the small promotional tile. Run after
-// `bun run build`; writes store/*.png.
+// pasted into OpenPencil and rendered by its engine, and the small promotional tile. Run it as
+// `bun run store:assets`, which builds first; writes store/*.png.
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

@@ -33,10 +33,13 @@ export function extensionVersion(rootDirectory = root) {
 export function requiredEntries(manifest, entries, readEntry) {
   const required = [manifest.background?.service_worker, ...Object.values(manifest.icons ?? {}), ...Object.values(manifest.action?.default_icon ?? {})];
   for (const resource of manifest.web_accessible_resources ?? []) required.push(...resource.resources);
-  for (const entry of entries.filter((name) => name.endsWith(".js"))) {
-    // Scripts the service worker injects (`files:["content.js"]`) and pages it opens.
-    for (const [, list] of readEntry(entry).matchAll(/files:\s*\[([^\]]*)\]/g)) required.push(...Array.from(list.matchAll(/"([^"]+)"/g), (match) => match[1]));
-    for (const [, page] of readEntry(entry).matchAll(/"([\w-]+\.html)"/g)) required.push(page);
+  // Scripts the service worker injects (`files:["content.js"]`) and pages it opens; only the
+  // worker is read, so a string inside a bundled library cannot stand for a file.
+  const worker = manifest.background?.service_worker;
+  if (worker && entries.includes(worker)) {
+    const source = readEntry(worker);
+    for (const [, list] of source.matchAll(/files:\s*\[([^\]]*)\]/g)) required.push(...Array.from(list.matchAll(/["']([^"']+)["']/g), (match) => match[1]));
+    for (const [, page] of source.matchAll(/["']([\w./-]+\.html)["']/g)) required.push(page);
   }
   for (const entry of entries.filter((name) => name.endsWith(".html"))) {
     for (const [, source] of readEntry(entry).matchAll(/(?:src|href)="([^"?#:]+)"/g)) required.push(join(dirname(entry), source).split(sep).join("/"));

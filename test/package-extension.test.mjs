@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { unzipSync } from "fflate";
-import { packageExtension, parseOptions } from "../scripts/package-extension.mjs";
+import { packageExtension, parseOptions, requiredEntries } from "../scripts/package-extension.mjs";
 
 const MANIFEST = {
   manifest_version:3, name:"Fixture", version:"1.2.3",
@@ -74,6 +74,16 @@ describe("the extension package", () => {
     expect(() => pack(fixture({extra:{"content.js.map":"{}"}}))).toThrow("not a runtime file: content.js.map");
     expect(() => pack(fixture({extra:{".DS_Store":""}}))).toThrow("not a runtime file: .DS_Store");
     expect(() => pack(fixture({change:{key:"abc"}}))).toThrow("manifest.key");
+  });
+
+  test("finds what the real service worker injects and opens, and nothing in other bundles", () => {
+    const manifest = JSON.parse(readFileSync(new URL("../extension/manifest.json", import.meta.url), "utf8"));
+    const sources = {"background.js":readFileSync(new URL("../src/extension/background.mjs", import.meta.url), "utf8"), "content.js":`const lib = {files:["vendor.js"], page:"help.html"};`};
+    const required = requiredEntries(manifest, Object.keys(sources), (entry) => sources[entry]);
+    expect(required).toContain("content.js");
+    expect(required).toContain("offscreen.html");
+    expect(required).not.toContain("vendor.js");
+    expect(required).not.toContain("help.html");
   });
 
   test("takes only the options it knows", () => {

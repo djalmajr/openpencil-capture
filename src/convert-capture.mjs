@@ -204,6 +204,7 @@ function titleCase(value) {
 
 export function semanticLayerName(node) {
   const tag = node.tag || "element";
+  if (tag === "::before" || tag === "::after") return `${titleCase(tag.slice(2))} · Decoration`;
   if (tag === "img") return `Image · ${cleanLabel(node.attributes.alt || node.name || "Asset")}`;
   if (tag === "canvas") return "Canvas · Snapshot";
   const meaningful = cleanLabel(node.name);

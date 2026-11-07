@@ -181,3 +181,13 @@ describe("baking filters into images", () => {
     expect(pixel.refused).toEqual([255, 0, 0, 255]);
   });
 });
+
+describe("pseudo-elements", () => {
+  test("captures a positioned pseudo-element with its quoted text, and leaves inline ones out", async () => {
+    const capture = await captureHtml(`<style>#root{position:relative;width:120px;height:40px}#root::after{content:"New";position:absolute;top:4px;right:4px;padding:2px 6px;background:rgb(220, 0, 0);color:white;font:12px Arial}#root::before{content:"•"}</style><div id="root"></div>`);
+    expect(capture.nodes.map((node) => node.tag)).toEqual(["div", "::after"]);
+    const {root} = convertCaptureToTree(capture);
+    expect(root.children[0]).toMatchObject({name:"After · Decoration", fill:"#DC0000", y:4});
+    expect(root.children[0].children[0]).toMatchObject({type:"text", content:"New"});
+  });
+});

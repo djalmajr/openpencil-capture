@@ -64,6 +64,8 @@ describe("the pasted design looks like the page", () => {
     "an SVG line from bottom left to top right": box("background:rgb(255, 255, 255)", `<svg width="160" height="96" style="display:block"><line x1="10" y1="86" x2="150" y2="10" stroke="rgb(20, 20, 20)" stroke-width="6"/></svg>`),
     "an SVG gradient defined outside the selection": `<svg width="0" height="0" style="position:absolute"><defs><linearGradient id="sky"><stop offset="0" stop-color="rgb(255, 120, 0)"/><stop offset="1" stop-color="rgb(80, 0, 200)"/></linearGradient></defs></svg>`
       + box("", `<svg width="160" height="96" style="display:block"><rect width="160" height="96" fill="url(#sky)"/></svg>`),
+    "positioned pseudo-elements": `<style>#root{position:relative}#root::before{content:"";position:absolute;inset:12px 20px auto auto;width:40px;height:30px;padding:2px;border:2px solid rgb(0, 0, 200);background:rgb(240, 60, 60)}#root::after{content:"";position:absolute;left:50%;top:50%;transform:translate(-50%, -50%);width:30px;height:30px;border-radius:50%;background:linear-gradient(rgb(0, 180, 90), rgb(0, 90, 180))}</style>`
+      + box("background:rgb(255, 255, 255);border:3px solid rgb(30, 30, 30);box-sizing:border-box"),
     "an image at its natural size": box("background:rgb(255, 255, 255)", `<img src="${QUADRANTS}" style="width:160px;height:96px;object-fit:none;object-position:right 20px top 10px;display:block">`),
   };
   for (const [name, html] of Object.entries(cases)) {

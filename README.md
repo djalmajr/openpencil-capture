@@ -37,6 +37,7 @@ During serialization the toolbar collapses to `Capturing selection…` or `Captu
 | Source | OpenPencil layer |
 | --- | --- |
 | HTML element | `FRAME` with absolute children, keeping the DOM hierarchy |
+| Positioned `::before`, `::after` | `FRAME` named `Before · Decoration`, `After · Decoration` |
 | Unpainted SVG wrapper | `GROUP` fitted to its children |
 | Text | `TEXT`, one layer per visual line, with visible truncation kept as `...`, preformatted spaces, and the font family the browser drew with |
 | `<a href>` | Text hyperlink to the absolute target, for `http(s)`, `mailto` and `tel` |
@@ -74,7 +75,7 @@ Values the page masks paste as bullets, both `type=password` fields and anything
 Limits of the capture model:
 
 - Layout is absolute; Auto Layout is not inferred.
-- Pseudo-elements and masks are not captured.
+- Inline pseudo-elements (`::before` icons and bullets in the text flow), `::marker` and masks are not captured. A positioned pseudo-element is, with its quoted text and the translation of its transform, not a rotation or scale.
 - Color filters (`sepia()`, `invert()`, `saturate()`, `hue-rotate()`, `contrast()`) are baked into images, and only by the extension: the CLI keeps the image unfiltered. On other elements they are dropped, and so are `filter:url()` and other `backdrop-filter` functions than `blur()`.
 - A cross-origin iframe comes out empty when the page around it is captured; capture inside the frame to get its content. So does a `<use>` that references another file.
 - A gradient that blends outside sRGB (`in oklab`, `oklch` stops) or through a color hint gets stops in between, so it is close but no longer has only the stops written. `lab`, `lch`, `hsl` and `hwb` blend as `oklab`, `oklch` and sRGB. `background-repeat:space` repeats without spacing.

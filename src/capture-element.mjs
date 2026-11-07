@@ -298,6 +298,34 @@ function useTarget(node) {
 // Properties a referenced element inherits from the <use> that shows it, not from where it sits.
 const INHERITED_SVG_STYLES = ["fill", "fillOpacity", "fillRule", "stroke", "strokeWidth", "strokeOpacity", "strokeDasharray", "strokeDashoffset", "strokeLinecap", "strokeLinejoin", "color", "visibility"];
 
+// Nothing reports where a pseudo-element is drawn. A positioned one is placed from its containing
+// block with the pixels the browser resolves for `left`, `top` and its size, plus the translation
+// of its transform; an inline one has no such numbers and is left out.
+function pseudoBox(node, computed) {
+  if (!["absolute", "fixed"].includes(computed.position)) return null;
+  const view = node.ownerDocument.defaultView;
+  const number = (value) => Number.parseFloat(value) || 0;
+  let origin = {x:0, y:0};
+  if (computed.position === "absolute") {
+    const block = view.getComputedStyle(node).position !== "static" ? node : node.offsetParent;
+    if (block && block !== node.ownerDocument.body) {
+      const rect = block.getBoundingClientRect();
+      origin = {x:rect.left + block.clientLeft, y:rect.top + block.clientTop};
+    } else {
+      origin = {x:-view.scrollX, y:-view.scrollY};
+    }
+  }
+  const extraX = computed.boxSizing === "border-box" ? 0 : ["paddingLeft", "paddingRight", "borderLeftWidth", "borderRightWidth"].reduce((total, key) => total + number(computed[key]), 0);
+  const extraY = computed.boxSizing === "border-box" ? 0 : ["paddingTop", "paddingBottom", "borderTopWidth", "borderBottomWidth"].reduce((total, key) => total + number(computed[key]), 0);
+  const width = number(computed.width) + extraX;
+  const height = number(computed.height) + extraY;
+  if (!(width > 0 && height > 0)) return null;
+  const translation = computed.transform?.match(/^matrix\(([^)]+)\)$/)?.[1].split(",").map(Number) || [1, 0, 0, 1, 0, 0];
+  const x = origin.x + number(computed.left) + number(computed.marginLeft) + translation[4];
+  const y = origin.y + number(computed.top) + number(computed.marginTop) + translation[5];
+  return {x, y, width, height, left:x, top:y, right:x + width, bottom:y + height};
+}
+
 const IMAGE_MEASURE_TIMEOUT_MS = 3000;
 
 // Where a background image lands depends on its natural size, which only the page knows. The
@@ -413,7 +441,34 @@ export async function captureElement(root, options = {}) {
       return;
     }
     const childContext = {...context, inResources, clip:contentClip(computed, box, clip)};
+    if (!isSvg && !inResources) visitPseudo(node, "::before", path, childContext);
     childNodes.filter((child) => child.nodeType === 1).forEach((child, index) => visit(child, `${path}.${index}`, path, childContext));
+    if (!isSvg && !inResources) visitPseudo(node, "::after", path, childContext);
+  };
+
+  const visitPseudo = (node, pseudo, parentPath, context) => {
+    const computed = styleOf(node, pseudo);
+    if (!computed || computed.content === "none" || computed.content === "normal" || computed.display === "none") return;
+    if (computed.visibility !== "visible" || Number.parseFloat(computed.opacity) === 0) return;
+    const raw = pseudoBox(node, computed);
+    if (!raw) return;
+    const box = {left:raw.left + context.offset.x, top:raw.top + context.offset.y, right:raw.right + context.offset.x, bottom:raw.bottom + context.offset.y};
+    if (!intersects(box, computed.position === "fixed" ? context.canvas : context.clip)) return;
+    const rect = rectIn(raw, context.offset);
+    // Only quoted text: counters, attr() and images have no string the capture can trust.
+    const quoted = computed.content.match(/^"((?:[^"\\]|\\.)*)"$/)?.[1]?.replace(/\\(.)/g, "$1").trim();
+    const number = (value) => Number.parseFloat(value) || 0;
+    const textRect = quoted ? {
+      x:rect.x + number(computed.borderLeftWidth) + number(computed.paddingLeft), y:rect.y + number(computed.borderTopWidth) + number(computed.paddingTop),
+      width:Math.max(1, rect.width - number(computed.borderLeftWidth) - number(computed.borderRightWidth) - number(computed.paddingLeft) - number(computed.paddingRight)),
+      height:Math.max(1, rect.height - number(computed.borderTopWidth) - number(computed.borderBottomWidth) - number(computed.paddingTop) - number(computed.paddingBottom)),
+    } : null;
+    nodes.push({
+      path:`${parentPath}.${pseudo.slice(2)}`, parentPath, tag:pseudo, namespace:"http://www.w3.org/1999/xhtml", role:null,
+      name:pseudo, text:quoted || null, textRect, textRuns:[],
+      ...(quoted ? {fontFamily:availableFamily(computed, fontCache)} : {}),
+      rect, styles:Object.fromEntries(CAPTURED_STYLE_KEYS.map((key) => [key, computed[key]])), attributes:{}, synthetic:"pseudo",
+    });
   };
 
   // A <use> shows a copy of what it references, which the page renders in a shadow tree nobody can
